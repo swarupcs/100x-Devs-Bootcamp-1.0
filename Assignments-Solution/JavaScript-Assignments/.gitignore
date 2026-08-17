@@ -1,1 +1,6 @@
 .DS_Store
+
+# Installed dependencies — every sub-project (01-js, js-built-ins, 01-async-js)
+# gets its own node_modules from `npm install`. Only 01-async-js ignored this
+# previously, so the other two would have committed ~267 packages each.
+node_modules/

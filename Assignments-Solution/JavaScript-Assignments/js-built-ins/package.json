@@ -16,11 +16,14 @@
     "test-prime": "npx jest ./tests/prime.test.js",
     "test-fibonacci": "npx jest ./tests/fibonacci.test.js",
     "test-perfect": "npx jest ./tests/perfectNumber.test.js",
-    "test-all": "npx jest ./tests/"
-
+    "test-all": "npx jest ./tests/",
+    "all": "npx jest ./tests/"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": ""
+  "description": "",
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
 }
