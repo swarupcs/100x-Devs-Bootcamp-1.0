@@ -52,6 +52,12 @@ pnpm dev
 | Task | Command |
 |---|---|
 | Run everything | `pnpm dev` |
+| Run only `user-app` | `pnpm dev:user-app` |
+| Run only `merchant-app` | `pnpm dev:merchant-app` |
+| Run only `bank-webhook` | `pnpm dev:bank-webhook` |
 | Build everything | `pnpm build` |
+| Build only `user-app` | `pnpm build:user-app` |
+| Build only `merchant-app` | `pnpm build:merchant-app` |
+| Build only `bank-webhook` | `pnpm build:bank-webhook` |
 | Open Prisma Studio | `cd packages/db && npx prisma studio` |
 | Build the Docker image locally | `cp docker/Dockerfile.user Dockerfile && docker build -t wallet-user-app -f Dockerfile . && rm Dockerfile` |

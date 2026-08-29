@@ -7,7 +7,13 @@
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
-    "start-user-app": "cd ./apps/user-app && npm run start"
+    "start-user-app": "cd ./apps/user-app && npm run start",
+    "dev:user-app": "pnpm --filter user-app dev",
+    "dev:merchant-app": "pnpm --filter merchant-app dev",
+    "dev:bank-webhook": "pnpm --filter bank-webhook dev",
+    "build:user-app": "pnpm --filter user-app build",
+    "build:merchant-app": "pnpm --filter merchant-app build",
+    "build:bank-webhook": "pnpm --filter bank-webhook build"
   },
   "devDependencies": {
     "prettier": "3.9.6",
