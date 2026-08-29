@@ -1,0 +1,21 @@
+{
+  "name": "bank-webhook",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild ./src/index.ts --bundle --platform=node --outfile=dist/index.js",
+    "start": "node dist/index.js",
+    "dev": "npm run build && npm run start"
+  },
+  "dependencies": {
+    "@repo/db": "workspace:*",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.7",
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.5"
+  }
+}

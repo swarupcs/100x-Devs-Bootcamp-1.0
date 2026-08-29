@@ -1,0 +1,27 @@
+{
+  "name": "@repo/db",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    "./client": "./index.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "scripts": {
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push --skip-generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "db:seed": "prisma db seed"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "bcrypt": "^5.1.1"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
+    "prisma": "6.19.3",
+    "tsx": "^4.19.2"
+  }
+}

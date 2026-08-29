@@ -1,0 +1,25 @@
+FROM node:20.12.0-alpine3.19
+
+WORKDIR /usr/src/app
+
+# This repo uses pnpm workspaces (internal deps use the "workspace:*" protocol),
+# so the image needs pnpm itself -- corepack ships with Node and activates the
+# exact pnpm version pinned in package.json's "packageManager" field.
+RUN corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
+
+COPY apps ./apps
+COPY packages ./packages
+
+# Install all monorepo dependencies (resolves every workspace:* internal package)
+RUN pnpm install --frozen-lockfile
+
+# Generate prisma client inside the db package
+RUN cd packages/db && npx prisma generate && cd ../..
+
+# Build the apps (Turbo will build everything by default)
+RUN pnpm run build
+
+# Start the user-app using the script we added to the root package.json
+CMD ["npm", "run", "start-user-app"]
