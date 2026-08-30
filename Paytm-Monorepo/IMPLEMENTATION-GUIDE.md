@@ -1,940 +1,2135 @@
-# Paytm-Style Wallet — Full Implementation Guide (Detailed Edition)
+# PayTM-Style Wallet — Stage 1 Guide (Full Detail)
 
-This is an expanded, file-by-file, step-by-step walkthrough of the `Paytm-Monorepo`
-codebase. It keeps the same four-stage shape as the original guide (Starter Monorepo →
-Wallet → P2P Transfer → Docker/CI-CD) plus the deviations section, but goes one level
-deeper: every file is explained in terms of *what it does*, *why it's written that way*,
-and *how it connects to the files around it*, with the actual control flow traced for
-the three flows that matter most (login, add-money/on-ramp, and P2P transfer).
+### `paytm-project-starter-monorepo` — build it from an empty folder to the exact starter state
 
-> Note on the Prisma schema: `packages/db/prisma/schema.prisma` itself was not part of
-> the file set this guide was generated from — only its **consumers** were (every
-> `prisma.<model>.findFirst/create/update` call across the apps, plus the `.env`
-> files). The model shapes described below (fields, relations, uniqueness constraints)
-> are reconstructed from that usage and should be cross-checked against the real
-> schema file if you have it open. Everywhere this happens it's flagged explicitly.
+This is the **fully expanded** version of the Stage 1 guide: every file below is the
+*complete* file, not an excerpt, and every step explains not just *what* to run but
+*why* that command/file exists. By the end you'll have a Turborepo with two Next.js
+apps (`user-app` on Credentials auth, `merchant-app` on Google OAuth) and four shared
+packages (`@repo/db`, `@repo/ui`, `@repo/store`, `@repo/eslint-config`) — with **no**
+wallet logic yet. That's Stage 2.
 
 ---
 
-## 0. Final repo structure
+## 0. Final Folder Structure (what you're building toward)
 
 ```
-Paytm-Monorepo/
-├── package.json                   # root scripts, pnpm workspace config
-├── turbo.json                     # Turborepo pipeline config
-├── pnpm-workspace.yaml            # declares apps/* and packages/* as workspaces
-├── pnpm-lock.yaml                 # single lockfile for the whole monorepo
-├── .npmrc                         # pnpm registry/hoisting settings (empty in this repo)
-├── docker/
-│   └── Dockerfile.user            # builds + runs user-app in a container
-├── .github/workflows/
-│   ├── build.yml                  # CI — build check on every PR into main
-│   └── push.yml                   # CD — build, push to Docker Hub, deploy to EC2
+paytm-project-starter-monorepo/
+├── .eslintrc.js
+├── .npmrc
+├── package.json
+├── turbo.json
+├── pnpm-workspace.yaml
 ├── apps/
-│   ├── user-app/                  # the wallet (Credentials auth)
-│   ├── merchant-app/              # merchant dashboard (Google OAuth)
-│   └── bank-webhook/              # Express service simulating a bank's webhook
+│   ├── merchant-app/
+│   │   ├── .eslintrc.js
+│   │   ├── .env
+│   │   ├── app/
+│   │   │   ├── api/
+│   │   │   │   ├── auth/[...nextauth]/route.ts
+│   │   │   │   └── user/route.ts
+│   │   │   ├── globals.css
+│   │   │   ├── layout.tsx
+│   │   │   ├── page.module.css
+│   │   │   └── page.tsx
+│   │   ├── lib/auth.ts
+│   │   ├── next-env.d.ts
+│   │   ├── next.config.js
+│   │   ├── package.json
+│   │   ├── postcss.config.js
+│   │   ├── provider.tsx
+│   │   ├── public/{circles,next,turborepo,vercel}.svg
+│   │   ├── README.md
+│   │   └── tailwind.config.js
+│   └── user-app/
+│       ├── .eslintrc.js
+│       ├── .env
+│       ├── app/
+│       │   ├── api/
+│       │   │   ├── auth/[...nextauth]/route.ts
+│       │   │   └── user/route.ts
+│       │   ├── globals.css
+│       │   ├── layout.tsx
+│       │   ├── lib/auth.ts
+│       │   ├── page.module.css
+│       │   └── page.tsx
+│       ├── next-env.d.ts
+│       ├── next.config.js
+│       ├── package.json
+│       ├── postcss.config.js
+│       ├── provider.tsx
+│       ├── public/{circles,next,turborepo,vercel}.svg
+│       ├── README.md
+│       └── tailwind.config.js
 └── packages/
-    ├── db/                        # Prisma schema + client singleton
-    ├── ui/                        # shared React components
-    ├── store/                     # shared Recoil balance atom
-    ├── eslint-config/             # shared ESLint configs (base/next/react-internal)
-    └── typescript-config/         # shared tsconfig bases (referenced, not shown)
+    ├── db/
+    │   ├── index.ts
+    │   ├── package.json
+    │   └── prisma/
+    │       ├── .env
+    │       └── schema.prisma
+    ├── eslint-config/
+    │   ├── library.js
+    │   ├── next.js
+    │   ├── react-internal.js
+    │   ├── package.json
+    │   └── README.md
+    ├── store/
+    │   ├── package.json
+    │   └── src/
+    │       ├── atoms/balance.ts
+    │       └── hooks/useBalance.ts
+    └── ui/
+        ├── .eslintrc.js
+        ├── package.json
+        ├── src/
+        │   ├── Appbar.tsx
+        │   ├── button.tsx
+        │   ├── card.tsx
+        │   └── code.tsx
+        └── turbo/generators/
+            ├── config.ts
+            └── templates/component.hbs
 ```
 
-Every app depends on `@repo/db` for data access; `user-app` and `merchant-app`
-additionally depend on `@repo/ui` (shared components) and `@repo/store` (a Recoil atom
-that currently exists but isn't wired into either app's UI yet — see §2.4).
+Notice one asymmetry that's easy to miss and worth calling out up front: `user-app`
+**puts its NextAuth config at** `app/lib/auth.ts`, while `merchant-app` **puts it at**
+`lib/auth.ts` (one level up, outside `app/`). This isn't a typo — it's simply how the
+starter was scaffolded, and it means the relative import paths in each app's
+`api/auth/[...nextauth]/route.ts` are different (`../../../lib/auth` vs
+`../../../../lib/auth`). Keep this in mind when you create the folders.
 
 ---
 
-## 1. Stage 1 — Starter monorepo (auth for both apps)
+## 1. Prerequisites (official installers only)
 
-### 1.1 `packages/db/index.ts` — the Prisma singleton
+```bash
+# Node.js 20+ via nvm (official Node version manager)
+nvm install 20
+nvm use 20
+
+# pnpm via the official install script
+curl -fsSL https://get.pnpm.io/install.sh | sh -
+
+node -v   # confirm >= 20
+pnpm -v   # confirm pnpm is on PATH
+```
+
+**Why pnpm instead of npm/yarn?** In a monorepo, pnpm's content-addressable store
+means every package's `node_modules` are hard-linked from one global cache instead of
+duplicated per-workspace, which matters a lot once you have 2 apps + 4 packages all
+depending on overlapping things like `react`, `typescript`, `eslint`. It also *refuses*
+to let a package import something it didn't explicitly declare as a dependency
+("phantom dependency" protection) — which catches real bugs in monorepos where it's
+easy to accidentally rely on a package hoisted in by a sibling.
+
+---
+
+## 2. Step 1 — Scaffold with the Official Turborepo CLI
+
+```bash
+pnpm dlx create-turbo@latest
+```
+
+Prompts:
+
+```
+? Where would you like to create your Turborepo?  ./paytm-project-starter-monorepo
+? Which package manager do you want to use?        pnpm
+```
+
+```bash
+cd paytm-project-starter-monorepo
+pnpm install
+pnpm dev   # sanity check — should start the default `web` and `docs` apps
+```
+
+### What this command generates, and why each file matters
+
+`pnpm-workspace.yaml` — tells pnpm which folders are workspaces (so
+`workspace:*` dependencies resolve locally instead of hitting the npm registry):
+
+```yaml
+packages:
+  - "apps/*"
+  - "packages/*"
+```
+
+`turbo.json` — the task pipeline. This is the file that lets `pnpm build` build
+every app/package in the correct dependency order (e.g. `@repo/db` before
+`user-app`, since `user-app` imports it) and cache results so unchanged packages
+don't rebuild:
+
+```jsonc
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["**/.env.*local", "**/.env"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+    },
+    "lint": {
+      "dependsOn": ["^lint"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    }
+  }
+}
+```
+
+- `"dependsOn": ["^build"]` — the `^` means "build this package's dependencies
+first." That's what guarantees `@repo/db`'s Prisma client is generated before
+`user-app` tries to import it.
+- `"cache": false, "persistent": true"` on `dev` — dev servers never finish running
+and shouldn't be cached; this tells Turbo to just stream their output live instead
+of trying to cache/replay them.
+
+**Root** `package.json` — delegates every script to `turbo`, so `pnpm build` at the
+root fans out to every workspace's own `build` script:
+
+```jsonc
+{
+  "name": "paytm-project-starter-monorepo",
+  "private": true,
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.2.5",
+    "turbo": "^1.13.0"
+  },
+  "packageManager": "pnpm@8.15.6",
+  "engines": {
+    "node": ">=18"
+  }
+}
+```
+
+**Root** `.eslintrc.js` — deliberately *ignores* `apps/`** and `packages/`**. Each
+workspace has its own `.eslintrc.js` extending the shared config, so the root config
+only lints stray files that live directly at the repo root:
+
+```js
+// This configuration only applies to the package manager root.
+/** @type {import("eslint").Linter.Config} */
+module.exports = {
+  ignorePatterns: ["apps/**", "packages/**"],
+  extends: ["@repo/eslint-config/library.js"],
+  parser: "@typescript-eslint/parser",
+  parserOptions: {
+    project: true,
+  },
+};
+```
+
+**Root** `.npmrc` — present but empty in this starter. It exists as a placeholder
+you'd fill in later (e.g. `auto-install-peers=true`, or private registry auth) — for
+now it does nothing and can stay empty:
+
+```
+(empty file)
+```
+
+---
+
+## 3. Step 2 — Rename the Default Apps
+
+`create-turbo` ships `apps/web` and `apps/docs`. Rename with `git mv` so history
+follows the files instead of showing them as deleted+created:
+
+```bash
+git mv apps/web apps/user-app
+git mv apps/docs apps/merchant-app
+```
+
+Update the `"name"` field in each app's `package.json` to match (you'll write the
+full `package.json` for each app from scratch in Steps 8–9 anyway, so this is really
+just about not leaving a stale `"name": "web"` around if you're doing this
+incrementally rather than building the files fresh).
+
+---
+
+## 4. Step 3 — Add New Packages with Turborepo's Generator
+
+```bash
+npx turbo gen workspace
+? What is the name of the workspace?      @repo/db
+? Which type of workspace should be added? package
+? Where should "@repo/db" be located?     packages/db
+? Would you like to copy content from another workspace? No
+```
+
+```bash
+npx turbo gen workspace
+? What is the name of the workspace?      @repo/store
+? Which type of workspace should be added? package
+? Where should "@repo/store" be located?  packages/store
+? Would you like to copy content from another workspace? No
+```
+
+Non-interactive equivalents, if you'd rather script this:
+
+```bash
+pnpm turbo gen workspace --name @repo/db --type package --destination packages/db --empty
+
+pnpm turbo gen workspace --name @repo/store --type package --destination packages/store --empty 
+
+```
+
+**Why use the generator instead of** `mkdir packages/db && pnpm init`**?** The generator
+registers the new folder as a pnpm workspace member correctly on the first try (no
+forgetting to check `pnpm-workspace.yaml` matches the glob), and it stamps out a
+minimal `package.json` + `tsconfig.json` that already point at the shared configs —
+one less place to make a typo.
+
+---
+
+## 5. Step 4 — `@repo/db`: Prisma Client Singleton
+
+```bash
+cd packages/db
+pnpm add @prisma/client@6
+pnpm add -D prisma@6
+npx prisma init --datasource-provider postgresql
+cd ../..
+
+```
+
+`npx prisma init` is the **official Prisma scaffolding command** — it creates
+`prisma/schema.prisma` and `prisma/.env` for you rather than you hand-writing the
+folder structure.
+
+### `packages/db/package.json`
+
+```json
+{
+  "name": "@repo/db",
+  "version": "1.0.0",
+  "private": true,
+  "exports": {
+    "./client": "./index.ts"
+  },
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate": "prisma migrate dev"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.13.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.13.0",
+    "typescript": "^5.4.5"
+  }
+}
+```
+
+The `"exports"` field is what makes `import db from "@repo/db/client"` work from
+inside `user-app`/`merchant-app` — pnpm's workspace linking + this exports map
+together mean the internal package behaves just like an npm package, without ever
+being published.
+
+### `packages/db/index.ts`
 
 ```ts
 import { PrismaClient } from '@prisma/client'
 
-const prismaClientSingleton = () => new PrismaClient()
+const prismaClientSingleton = () => {
+  return new PrismaClient()
+}
 
 declare global {
   var prismaGlobal: undefined | ReturnType<typeof prismaClientSingleton>
 }
 
-const prisma = globalThis.prismaGlobal ?? prismaClientSingleton()
+const prisma: ReturnType<typeof prismaClientSingleton> = globalThis.prismaGlobal ?? prismaClientSingleton()
 
 export default prisma
+
 if (process.env.NODE_ENV !== 'production') globalThis.prismaGlobal = prisma
-export * from '@prisma/client'
 ```
 
-Step by step:
+**Why the** `globalThis` **dance instead of just** `export default new PrismaClient()`**?**
+In Next.js dev mode, every hot-reload re-executes your module code, which would
+create a brand-new `PrismaClient` (and a brand-new pool of DB connections) on every
+single file save — you'd exhaust Postgres's connection limit within a few minutes of
+active development. Stashing the instance on `globalThis` means hot reloads reuse the
+same client instead of creating a new one. This pattern is lifted directly from
+Prisma's own official Next.js integration guide, not invented for this project.
 
-1. `prismaClientSingleton()` is just a factory — calling `new PrismaClient()` opens a
-   connection pool to Postgres.
-2. `declare global { var prismaGlobal: ... }` extends TypeScript's global scope so
-   `globalThis.prismaGlobal` type-checks. This is necessary because the *value* being
-   stashed there survives module reloads, but the *type system* has no idea that field
-   exists on `globalThis` by default.
-3. `const prisma = globalThis.prismaGlobal ?? prismaClientSingleton()` — on the very
-   first import, `globalThis.prismaGlobal` is `undefined`, so a new client is created.
-4. The `if (process.env.NODE_ENV !== 'production')` guard then caches that client on
-   `globalThis`. In development, Next.js's dev server hot-reloads route modules on every
-   file save, which would normally re-run this whole file and create a *new*
-   `PrismaClient` (and therefore a new connection pool) on every save — quickly
-   exhausting Postgres's `max_connections`. Stashing the instance on `globalThis` (which
-   is **not** reset between hot reloads, only between full process restarts) means the
-   same client is reused across saves. In production there's no hot-reload cycle, so
-   this caching is skipped — each server process just gets its own single client for
-   its lifetime.
-5. `export * from '@prisma/client'` re-exports every generated type (`User`, `Balance`,
-   `OnRampTransaction`, enums, etc.) so consumers can `import { OnRampTransaction } from
-   "@repo/db/client"` instead of reaching into `@prisma/client` directly.
+### `packages/db/prisma/schema.prisma`
 
-Every server-side file in this repo that touches the database imports this same default
-export, so there is exactly **one** live connection pool per running process, no matter
-how many files call into it.
+```prisma
+generator client {
+  provider = "prisma-client-js"
+}
 
-### 1.2 `apps/user-app/app/lib/auth.ts` — Credentials auth doubling as signup
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
 
-```ts
-export const authOptions = {
-  providers: [
-    CredentialsProvider({
-      name: 'Credentials',
-      credentials: {
-        phone: { label: "Phone number", type: "text" },
-        password: { label: "Password", type: "password" }
-      },
-      async authorize(credentials) {
-        const hashedPassword = await bcrypt.hash(credentials.password, 10);
-        const existingUser = await db.user.findFirst({ where: { number: credentials.phone } });
+model User {
+  id       Int     @id @default(autoincrement())
+  email    String? @unique
+  name     String?
+  number   String? @unique
+  password String?
+}
 
-        if (existingUser) {
-          if (!existingUser.password) return null;
-          const passwordValidation = await bcrypt.compare(credentials.password, existingUser.password);
-          if (passwordValidation) {
-            return { id: existingUser.id.toString(), name: existingUser.name, email: existingUser.number };
-          }
-          return null;
-        }
+model Merchant {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  name      String?
+  auth_type AuthType @default(Google)
+}
 
-        try {
-          const user = await db.user.create({ data: { number: credentials.phone, password: hashedPassword } });
-          return { id: user.id.toString(), name: user.name, email: user.number };
-        } catch (e) { console.error(e); }
-        return null;
-      }
-    })
-  ],
-  secret: process.env.JWT_SECRET || "secret",
-  callbacks: {
-    async session({ token, session }) {
-      session.user.id = token.sub
-      return session
-    }
+enum AuthType {
+  Google
+  Github
+}
+```
+
+Why only these two models at this stage? Because that's all the *starter's actual
+code* touches: `user-app`'s Credentials provider reads/writes `User` (by phone
+`number`), and `merchant-app`'s Google `signIn` callback upserts `Merchant` (by
+`email`). `Balance` and `OnRampTransaction` don't exist yet — those are Stage 2.
+
+### `packages/db/prisma/.env`
+
+```
+DATABASE_URL="postgresql://postgres:mysecretpassword@localhost:5432/postgres"
+```
+
+Start Postgres locally the official Docker way:
+
+```bash
+docker run -e POSTGRES_PASSWORD=mysecretpassword -d -p 5432:5432 postgres
+```
+
+Then run the migration and generate the client:
+
+```bash
+cd packages/db
+npx prisma migrate dev --name init
+npx prisma generate
+cd ../..
+```
+
+---
+
+## 6. Step 5 — `@repo/store`: Shared Recoil Balance Atom
+
+```bash
+cd packages/store
+pnpm add recoil
+cd ../..
+```
+
+### `packages/store/package.json`
+
+```json
+{
+  "name": "@repo/store",
+  "version": "1.0.0",
+  "private": true,
+  "exports": {
+    "./balance": "./src/hooks/useBalance.ts"
+  },
+  "dependencies": {
+    "recoil": "^0.7.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
   }
 }
 ```
 
-Trace through both cases:
-
-- **Existing user, correct password**: `db.user.findFirst` finds a row → the
-  `!existingUser.password` guard passes (there is a password) → `bcrypt.compare` checks
-  the plaintext the user just typed against the stored hash → on match, returns a user
-  object shaped like NextAuth expects (`id`, `name`, `email` — note `email` here is
-  actually the phone number, reused as the unique display identifier since this app has
-  no real email field).
-- **Existing user, wrong password**: same path, but `bcrypt.compare` returns `false`,
-  so `authorize` returns `null`, and NextAuth surfaces this as a failed login.
-- **Brand-new phone number**: `findFirst` returns `null` → falls into the `try` block →
-  `db.user.create` inserts a new row with the *hash* (not the plaintext) as the stored
-  password → returns the new user immediately, logging them in. **There is no separate
-  sign-up screen** — the first time any phone number is used, it's registered on the
-  spot. This is a deliberate simplification for the course project, not an oversight,
-  but it does mean there's no "this number is already taken, please log in instead"
-  distinction beyond the password check above.
-- **Existing user with a null password** (e.g. a row created by some other path that
-  never set a password): the guard `if (!existingUser.password) return null;` stops the
-  flow before it would otherwise call `bcrypt.compare(plaintext, null)`, which would
-  throw a runtime type error. This is one of the toolchain fixes documented in §5.6.
-
-The `session` callback runs on every `useSession()`/`getServerSession()` call on the
-client or server. `token.sub` is the JWT's "subject" claim, which NextAuth populates
-with the id returned from `authorize` above. Copying it onto `session.user.id` is what
-lets every other file in this app write `session?.user?.id` and get the numeric user id
-— without this callback, `session.user` would only carry `name`/`email`/`image`.
-
-### 1.3 `apps/merchant-app/lib/auth.ts` — Google OAuth with upsert-on-signin
+### `packages/store/src/atoms/balance.ts`
 
 ```ts
-export const authOptions = {
-  providers: [GoogleProvider({ clientId: ..., clientSecret: ... })],
-  callbacks: {
-    async signIn({ user }) {
-      if (!user || !user.email) return false;
-      await db.merchant.upsert({
-        select: { id: true },
-        where: { email: user.email },
-        create: { email: user.email, name: user.name, auth_type: "Google" },
-        update: { name: user.name, auth_type: "Google" }
-      });
-      return true;
-    }
-  },
-  secret: process.env.NEXTAUTH_SECRET || "secret"
+import { atom } from "recoil";
+
+export const balanceAtom = atom<number>({
+    key: "balance",
+    default: 0,
+})
+```
+
+### `packages/store/src/hooks/useBalance.ts`
+
+```ts
+import { useRecoilValue } from "recoil"
+import { balanceAtom } from "../atoms/balance"
+
+export const useBalance = () => {
+    const value = useRecoilValue(balanceAtom);
+    return value;
 }
 ```
 
-Unlike `user-app`, there's no manual credential check here — Google has already verified
-the person's identity by the time this callback runs. `signIn` fires *after* Google
-redirects back with a verified profile, and its only job is to make sure a `Merchant`
-row exists for that email, using `upsert` so this works identically whether it's the
-merchant's first login ever (`create` branch) or their hundredth (`update` branch, which
-just refreshes the display name in case it changed on the Google account). Returning
-`false` from `signIn` would abort the login — here that only happens if Google somehow
-returns a profile with no email at all, which practically never happens with the default
-scope.
+**Why is this a hook wrapping an atom rather than exporting the atom directly?**
+Exporting `useBalance()` instead of `balanceAtom` means consuming components never
+import from `recoil` directly — they just call a hook. That gives you a seam: later,
+if the balance moves to a different state library, or starts fetching from the
+server instead of being a static default, every consumer keeps working unchanged.
+Right now it's a placeholder — nothing ever calls `useSetRecoilState(balanceAtom)`, so
+`merchant-app`'s `useBalance()` will always render `0` until Stage 2 wires it up to
+something real.
 
-### 1.4 Route handlers — `app/api/auth/[...nextauth]/route.ts` (both apps)
+---
+
+## 7. Step 6 — `@repo/eslint-config`: Shared Lint Rules
+
+This package was already scaffolded by `create-turbo` in Step 1 (it's one of the
+default packages, alongside `ui` and `typescript-config`) — you're just filling in
+its actual content here to match what the starter uses.
+
+### `packages/eslint-config/package.json`
+
+```json
+{
+  "name": "@repo/eslint-config",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "@vercel/style-guide": "^5.2.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-config-turbo": "^1.13.0",
+    "eslint-plugin-only-warn": "^1.1.0",
+    "typescript": "^5.4.5"
+  }
+}
+```
+
+### `packages/eslint-config/library.js`
+
+Used by plain TypeScript packages (like `@repo/db`, `@repo/store`) that have no
+React/browser concerns:
+
+```js
+const { resolve } = require("node:path");
+
+const project = resolve(process.cwd(), "tsconfig.json");
+
+/** @type {import("eslint").Linter.Config} */
+module.exports = {
+  extends: ["eslint:recommended", "prettier", "eslint-config-turbo"],
+  plugins: ["only-warn"],
+  globals: {
+    React: true,
+    JSX: true,
+  },
+  env: {
+    node: true,
+  },
+  settings: {
+    "import/resolver": {
+      typescript: {
+        project,
+      },
+    },
+  },
+  ignorePatterns: [
+    // Ignore dotfiles
+    ".*.js",
+    "node_modules/",
+    "dist/",
+  ],
+  overrides: [
+    {
+      files: ["*.js?(x)", "*.ts?(x)"],
+    },
+  ],
+};
+```
+
+### `packages/eslint-config/next.js`
+
+Used by the two Next.js apps. Pulls in `@vercel/style-guide`'s Next.js rules on top
+of the base rules, and turns on the `browser` env since these run client-side too:
+
+```js
+const { resolve } = require("node:path");
+
+const project = resolve(process.cwd(), "tsconfig.json");
+
+/** @type {import("eslint").Linter.Config} */
+module.exports = {
+  extends: [
+    "eslint:recommended",
+    "prettier",
+    require.resolve("@vercel/style-guide/eslint/next"),
+    "eslint-config-turbo",
+  ],
+  globals: {
+    React: true,
+    JSX: true,
+  },
+  env: {
+    node: true,
+    browser: true,
+  },
+  plugins: ["only-warn"],
+  settings: {
+    "import/resolver": {
+      typescript: {
+        project,
+      },
+    },
+  },
+  ignorePatterns: [
+    // Ignore dotfiles
+    ".*.js",
+    "node_modules/",
+  ],
+  overrides: [{ files: ["*.js?(x)", "*.ts?(x)"] }],
+};
+```
+
+### `packages/eslint-config/react-internal.js`
+
+Used by `@repo/ui` — a React component library that's *consumed* by other apps
+rather than run directly, so it only needs `browser` env, not `node`:
+
+```js
+const { resolve } = require("node:path");
+
+const project = resolve(process.cwd(), "tsconfig.json");
+
+/*
+ * This is a custom ESLint configuration for use with
+ * internal (bundled by their consumer) libraries
+ * that utilize React.
+ *
+ * This config extends the Vercel Engineering Style Guide.
+ * For more information, see https://github.com/vercel/style-guide
+ *
+ */
+
+/** @type {import("eslint").Linter.Config} */
+module.exports = {
+  extends: ["eslint:recommended", "prettier", "eslint-config-turbo"],
+  plugins: ["only-warn"],
+  globals: {
+    React: true,
+    JSX: true,
+  },
+  env: {
+    browser: true,
+  },
+  settings: {
+    "import/resolver": {
+      typescript: {
+        project,
+      },
+    },
+  },
+  ignorePatterns: [
+    // Ignore dotfiles
+    ".*.js",
+    "node_modules/",
+    "dist/",
+  ],
+  overrides: [
+    // Force ESLint to detect .tsx files
+    { files: ["*.js?(x)", "*.ts?(x)"] },
+  ],
+};
+```
+
+**Why three separate configs instead of one?** Each target has a genuinely different
+runtime: `library.js` is for code that only ever runs in Node (no `window`, no JSX
+runtime assumptions beyond the `React`/`JSX` globals), `next.js` is for code that
+runs in both the Next.js server *and* the browser, and `react-internal.js` is for a
+component library that's never executed on its own — it's always bundled into
+whatever consumes it, so it only needs the `browser` env. Splitting them means a
+config change to "how we lint Next.js apps" can't accidentally break linting for the
+plain `@repo/db` package.
+
+Every one of them uses `eslint-plugin-only-warn` — this **downgrades every ESLint
+error to a warning**. The rationale: you still see every issue in your editor and CI
+output, but a lint problem never blocks a build or fails a commit hook outright — a
+deliberate tradeoff for developer velocity over strictness in this course project.
+
+### `packages/eslint-config/README.md`
+
+```md
+# `@turbo/eslint-config`
+
+Collection of internal eslint configurations.
+```
+
+---
+
+## 8. Step 7 — `@repo/ui`: Shared Component Library
+
+This package is also already scaffolded by `create-turbo`, complete with its own
+Turborepo *code generator* for adding new components (`turbo/generators/`). You're
+filling in the components the starter actually ships with.
+
+### `packages/ui/package.json`
+
+```json
+{
+  "name": "@repo/ui",
+  "version": "1.0.0",
+  "private": true,
+  "exports": {
+    "./button": "./src/button.tsx",
+    "./card": "./src/card.tsx",
+    "./code": "./src/code.tsx",
+    "./appbar": "./src/Appbar.tsx"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@turbo/gen": "^1.13.0",
+    "@types/react": "^18.2.79",
+    "@types/react-dom": "^18.2.25",
+    "eslint": "^8.57.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.4.5"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  }
+}
+```
+
+### `packages/ui/.eslintrc.js`
+
+```js
+/** @type {import("eslint").Linter.Config} */
+module.exports = {
+  root: true,
+  extends: ["@repo/eslint-config/react-internal.js"],
+  parser: "@typescript-eslint/parser",
+  parserOptions: {
+    project: "./tsconfig.lint.json",
+    tsconfigRootDir: __dirname,
+  },
+};
+```
+
+### `packages/ui/src/button.tsx`
+
+```tsx
+"use client";
+
+import { ReactNode } from "react";
+
+interface ButtonProps {
+  children: ReactNode;
+  onClick: () => void;
+}
+
+export const Button = ({ onClick, children }: ButtonProps) => {
+  return (
+    <button onClick={onClick} type="button" className="text-white bg-gray-800 hover:bg-gray-900 focus:outline-none focus:ring-4 focus:ring-gray-300 font-medium rounded-lg text-sm px-5 py-2.5 me-2 mb-2">
+      {children}
+    </button>
+
+  );
+};
+```
+
+Note the `"use client"` directive at the top — this component takes an `onClick`
+callback, which means it needs to run in the browser (React Server Components can't
+attach event handlers). Every component in this file that's interactive needs this
+marker or Next.js's App Router will error when a Server Component tries to render it
+with a function prop.
+
+### `packages/ui/src/card.tsx`
+
+```tsx
+export function Card({
+  className,
+  title,
+  children,
+  href,
+}: {
+  className?: string;
+  title: string;
+  children: React.ReactNode;
+  href: string;
+}): JSX.Element {
+  return (
+    <a
+      className={className}
+      href={`${href}?utm_source=create-turbo&utm_medium=basic&utm_campaign=create-turbo"`}
+      rel="noopener noreferrer"
+      target="_blank"
+    >
+      <h2 className="text-sm">
+        {title} <span>-></span>
+      </h2>
+      <p>{children}</p>
+    </a>
+  );
+}
+```
+
+This is the **stock** `create-turbo` ****`Card` — an outbound link card with UTM tracking
+params baked in, meant for the default "Docs / Learn / Templates / Deploy" links on
+the placeholder homepage. It is *not* the content-container `Card` you'll build in
+Stage 2 (title + children, no link) — that's a breaking rewrite that happens later.
+Leaving it as-is here is intentional: it proves this package really is the
+unmodified starter output.
+
+### `packages/ui/src/code.tsx`
+
+```tsx
+export function Code({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}): JSX.Element {
+  return <code className={className}>{children}</code>;
+}
+```
+
+Another stock `create-turbo` component — a thin wrapper around `<code>`. Nothing in
+the starter's actual pages uses it yet, but it ships by default and nothing removes
+it.
+
+### `packages/ui/src/Appbar.tsx`
+
+```tsx
+import { Button } from "./button";
+
+interface AppbarProps {
+    user?: {
+        name?: string | null;
+    },
+    // TODO: can u figure out what the type should be here?
+    onSignin: any,
+    onSignout: any
+}
+
+export const Appbar = ({
+    user,
+    onSignin,
+    onSignout
+}: AppbarProps) => {
+    return <div className="flex justify-between border-b px-4">
+        <div className="text-lg flex flex-col justify-center">
+            PayTM
+        </div>
+        <div className="flex flex-col justify-center pt-2">
+            <Button onClick={user ? onSignout : onSignin}>{user ? "Logout" : "Login"}</Button>
+        </div>
+    </div>
+}
+```
+
+This is the one genuinely *product-specific* component in the starter's UI package —
+everything else came from `create-turbo`'s template. It's intentionally generic about
+*how* sign-in/sign-out happens: `onSignin`/`onSignout` are typed `any` (with a TODO
+comment left in on purpose) because `user-app` passes NextAuth's `signIn`/`signOut`
+functions and `merchant-app` does the same, but the exact function signatures differ
+slightly enough that nailing the type down isn't trivial — a deliberate "figure this
+out yourself" exercise left in the source.
+
+### `packages/ui/turbo/generators/config.ts`
+
+```ts
+import type { PlopTypes } from "@turbo/gen";
+
+// Learn more about Turborepo Generators at https://turbo.build/repo/docs/core-concepts/monorepos/code-generation
+
+export default function generator(plop: PlopTypes.NodePlopAPI): void {
+  // A simple generator to add a new React component to the internal UI library
+  plop.setGenerator("react-component", {
+    description: "Adds a new react component",
+    prompts: [
+      {
+        type: "input",
+        name: "name",
+        message: "What is the name of the component?",
+      },
+    ],
+    actions: [
+      {
+        type: "add",
+        path: "src/{{kebabCase name}}.tsx",
+        templateFile: "templates/component.hbs",
+      },
+      {
+        type: "append",
+        path: "package.json",
+        pattern: /"exports": {(?<insertion>)/g,
+        template: '"./{{kebabCase name}}": "./src/{{kebabCase name}}.tsx",',
+      },
+    ],
+  });
+}
+```
+
+This is what powers `pnpm turbo gen react-component` — it's built on
+[Plop](https://plopjs.com/), a code-generator microframework. Two things happen when
+you run it: (1) a new `.tsx` file is created from the Handlebars template below, and
+(2) a regex `append` action inserts a matching line into `package.json`'s `exports`
+map automatically, immediately after the opening `"exports": {`. That's why adding a
+new shared component never requires manually touching `package.json` — the generator
+does it for you, and does it identically every time.
+
+### `packages/ui/turbo/generators/templates/component.hbs`
+
+```hbs
+export const {{ pascalCase name }} = ({ children }: { children: React.ReactNode }) => {
+  return (
+    <div>
+      <h1>{{ pascalCase name }} Component</h1>
+      {children}
+    </div>
+  );
+};
+```
+
+`{{ pascalCase name }}` is a Handlebars helper bundled with Plop — type `select` at
+the prompt and you get a component literally named `Select`, file named
+`select.tsx`. This stock template is deliberately minimal; you rewrite the body every
+time you generate something real (as you will in Stage 2 for `Center`, `Select`,
+`TextInput`).
+
+---
+
+## 9. Step 8 — `user-app`: Credentials Auth
+
+```bash
+cd apps/user-app
+pnpm add next react react-dom next-auth bcrypt recoil
+pnpm add -D typescript @types/node @types/react @types/react-dom @types/bcrypt tailwindcss postcss autoprefixer eslint
+cd ../..
+```
+
+Link the internal workspace packages by hand in `package.json` (shown in full
+below), then reinstall from the root so pnpm creates the symlinks:
+
+```bash
+pnpm install
+```
+
+### `apps/user-app/package.json`
+
+```json
+{
+  "name": "user-app",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3001",
+    "build": "next build",
+    "start": "next start -p 3001",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@repo/db": "workspace:*",
+    "@repo/store": "workspace:*",
+    "@repo/ui": "workspace:*",
+    "bcrypt": "^5.1.1",
+    "next": "^14.2.3",
+    "next-auth": "^4.24.7",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recoil": "^0.7.7"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@types/bcrypt": "^5.0.2",
+    "@types/node": "^20.12.7",
+    "@types/react": "^18.2.79",
+    "@types/react-dom": "^18.2.25",
+    "autoprefixer": "^10.4.19",
+    "eslint": "^8.57.0",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.4.5"
+  }
+}
+```
+
+`"dev": "next dev -p 3001"` — pinned to port 3001 specifically because
+`merchant-app` will run on Next's default 3000, and both apps run simultaneously
+under `turbo dev`.
+
+### `apps/user-app/.eslintrc.js`
+
+```js
+/** @type {import("eslint").Linter.Config} */
+module.exports = {
+  root: true,
+  extends: ["@repo/eslint-config/next.js"],
+  parser: "@typescript-eslint/parser",
+  parserOptions: {
+    project: true,
+  },
+};
+```
+
+### `apps/user-app/next.config.js`
+
+```js
+/** @type {import('next').NextConfig} */
+module.exports = {
+  transpilePackages: ["@repo/ui"],
+};
+```
+
+**Why** `transpilePackages`**?** `@repo/ui` ships raw, un-built `.tsx` source (there's
+no separate build step that compiles it to `.js` first) — it's consumed directly from
+`packages/ui/src`. Next.js's compiler (SWC) by default only transpiles code inside
+the app itself; `transpilePackages` tells it to also run its TypeScript/JSX
+transform over this specific workspace package before bundling it, since otherwise
+Next.js would try to serve raw untranspiled TSX straight to the bundler and fail.
+
+### `apps/user-app/tailwind.config.js`
+
+```js
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+    "../../packages/ui/**/*.{js,ts,jsx,tsx,mdx}"
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+```
+
+The last `content` glob — `../../packages/ui/**/*...` — is the one line that's easy
+to forget when wiring up a shared UI package: without it, Tailwind's JIT compiler
+only scans `user-app`'s own files for class names, so any utility class used
+*exclusively* inside `@repo/ui` components (like `Appbar`'s `flex justify-between border-b px-4`) would get purged from the final CSS and silently render unstyled.
+
+### `apps/user-app/postcss.config.js`
+
+```js
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+```
+
+### `apps/user-app/app/globals.css`
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+### `apps/user-app/provider.tsx`
+
+```tsx
+"use client"
+import { RecoilRoot } from "recoil";
+import { SessionProvider } from "next-auth/react";
+
+export const Providers = ({children}: {children: React.ReactNode}) => {
+    return <RecoilRoot>
+        <SessionProvider>
+            {children}
+        </SessionProvider>
+    </RecoilRoot>
+}
+```
+
+Two providers, nested, both needed for the app to function: `RecoilRoot` so
+`useBalance()` (and anything else built on Recoil later) has state to read from, and
+`SessionProvider` so client components can call `useSession()`/`signIn()`/`signOut()`
+from `next-auth/react` without each one having to fetch the session manually.
+
+### `apps/user-app/app/layout.tsx`
+
+```tsx
+import "./globals.css";
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import { Providers } from "../provider";
+
+const inter = Inter({ subsets: ["latin"] });
+
+export const metadata: Metadata = {
+  title: "Create Turborepo",
+  description: "Generated by create turbo",
+};
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <html lang="en">
+      <Providers>
+        <body className={inter.className}>{children}</body>
+      </Providers>
+    </html>
+  );
+}
+```
+
+Note the `metadata` still says `"Create Turborepo"` / `"Generated by create turbo"` —
+this is the *default* metadata `create-turbo` scaffolds, left completely untouched.
+It's another marker (like the `Card` component above) that confirms this is the raw
+starter, not a polished product — Stage 2 changes this to `"Wallet"` /
+`"Simple wallet app"` once the app actually has a personality.
+
+### `apps/user-app/app/page.tsx`
+
+```tsx
+"use client"
+import { signIn, signOut, useSession } from "next-auth/react";
+import { Appbar } from "@repo/ui/appbar";
+
+export default function Page(): JSX.Element {
+  const session = useSession();
+  return (
+   <div>
+      <Appbar onSignin={signIn} onSignout={signOut} user={session.data?.user} />
+   </div>
+  );
+}
+```
+
+The entire homepage, at this stage, is just the shared `Appbar` wired to NextAuth's
+`signIn`/`signOut` and the current session's user. `useSession()` returns a loading
+state initially, then either `{ data: { user: {...} } }` or `{ data: null }` — the
+`session.data?.user` optional chain is what lets `Appbar` fall back to showing
+"Login" before the session has resolved.
+
+### `apps/user-app/app/lib/auth.ts`
+
+```ts
+import db from "@repo/db/client";
+import CredentialsProvider from "next-auth/providers/credentials"
+import bcrypt from "bcrypt";
+
+export const authOptions = {
+    providers: [
+      CredentialsProvider({
+          name: 'Credentials',
+          credentials: {
+            phone: { label: "Phone number", type: "text", placeholder: "1231231231", required: true },
+            password: { label: "Password", type: "password", required: true }
+          },
+          // TODO: User credentials type from next-aut
+          async authorize(credentials: any) {
+            // Do zod validation, OTP validation here
+            const hashedPassword = await bcrypt.hash(credentials.password, 10);
+            const existingUser = await db.user.findFirst({
+                where: {
+                    number: credentials.phone
+                }
+            });
+
+            if (existingUser) {
+                const passwordValidation = await bcrypt.compare(credentials.password, existingUser.password);
+                if (passwordValidation) {
+                    return {
+                        id: existingUser.id.toString(),
+                        name: existingUser.name,
+                        email: existingUser.number
+                    }
+                }
+                return null;
+            }
+
+            try {
+                const user = await db.user.create({
+                    data: {
+                        number: credentials.phone,
+                        password: hashedPassword
+                    }
+                });
+            
+                return {
+                    id: user.id.toString(),
+                    name: user.name,
+                    email: user.number
+                }
+            } catch(e) {
+                console.error(e);
+            }
+
+            return null
+          },
+        })
+    ],
+    secret: process.env.JWT_SECRET || "secret",
+    callbacks: {
+        // TODO: can u fix the type here? Using any is bad
+        async session({ token, session }: any) {
+            session.user.id = token.sub
+
+            return session
+        }
+    }
+  }
+```
+
+Walking through `authorize` line by line, because the logic order here is
+non-obvious and worth understanding rather than just copying:
+
+1. It **hashes the incoming password unconditionally**, before it even knows if the
+  user exists. This is genuinely wasted work on the login path (the hash gets
+   thrown away) — a small inefficiency inherited as-is in the starter, not something
+   to fix here since Stage 1/2 leave it exactly as shipped.
+2. It looks up a `User` row by phone `number`.
+3. **If the user exists** — this acts as a *login*: `bcrypt.compare` checks the
+  supplied password against the stored hash. Match → return a NextAuth user object.
+   No match → return `null` (NextAuth treats this as "invalid credentials").
+4. **If the user does NOT exist** — this acts as *implicit sign-up*: it creates a new
+  `User` row on the spot with the (correctly, this time) hashed password. There's no
+   separate "Create Account" screen; the credentials form doubles as both login and
+   registration, distinguishing the two paths purely by whether the phone number is
+   already in the database.
+
+The `session` callback copies `token.sub` (the JWT subject, i.e. the user's ID) onto
+`session.user.id`. Without this, `session.user` would only ever have `name`/`email`
+from the default NextAuth session shape — no `id` field — and every downstream query
+in Stage 2 that does `where: { userId: Number(session.user.id) }` would break.
+
+### `apps/user-app/app/api/auth/[...nextauth]/route.ts`
 
 ```ts
 import NextAuth from "next-auth"
 import { authOptions } from "../../../lib/auth"
+
 const handler = NextAuth(authOptions)
+
 export { handler as GET, handler as POST }
 ```
 
-This is the Next.js App Router's "catch-all route" pattern: the `[...nextauth]` folder
-name means this one file answers **every** request under `/api/auth/*` —
-`/api/auth/signin`, `/api/auth/callback/google`, `/api/auth/session`, `/api/auth/signout`,
-etc. — by handing them all to the single `NextAuth(authOptions)` handler, which
-internally dispatches based on the path suffix. Exporting the same `handler` as both
-`GET` and `POST` is required because different NextAuth internal routes use different
-HTTP methods (the sign-in page is a `GET`, submitting credentials is a `POST`).
+The `[...nextauth]` catch-all route is NextAuth's own required convention — it
+handles every auth-related URL (`/api/auth/signin`, `/api/auth/callback/credentials`,
+`/api/auth/session`, etc.) through this one file. The relative import path
+`../../../lib/auth` climbs from `app/api/auth/[...nextauth]/` up to `app/lib/auth.ts`
+— three levels, matching `user-app`'s "auth lives inside `app/`" layout.
 
-### 1.5 Providers — `provider.tsx` (both apps, identical)
+### `apps/user-app/app/api/user/route.ts`
+
+```ts
+import { getServerSession } from "next-auth"
+import { NextResponse } from "next/server";
+import { authOptions } from "../../lib/auth";
+
+export const GET = async () => {
+    const session = await getServerSession(authOptions);
+    if (session.user) {
+        return NextResponse.json({
+            user: session.user
+        })
+    }
+    return NextResponse.json({
+        message: "You are not logged in"
+    }, {
+        status: 403
+    })
+}
+```
+
+A tiny diagnostic endpoint: hit `/api/user` and it echoes back your session (or a 403
+if you're not logged in). Useful for confirming the `session.user.id` callback above
+is actually populating correctly, without needing a UI for it.
+
+### `apps/user-app/app/page.module.css`
+
+Scoped CSS Modules for the (currently unused, since `page.tsx` doesn't reference
+`styles.main` etc.) default `create-turbo` homepage layout — kept in the starter
+because deleting it isn't necessary and it costs nothing to leave in place:
+
+```css
+.main {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6rem;
+  min-height: 100vh;
+}
+
+.vercelLogo {
+  filter: invert(1);
+}
+
+.description {
+  display: inherit;
+  justify-content: inherit;
+  align-items: inherit;
+  font-size: 0.85rem;
+  max-width: var(--max-width);
+  width: 100%;
+  z-index: 2;
+  font-family: var(--font-mono);
+}
+
+.description a {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.description p {
+  position: relative;
+  margin: 0;
+  padding: 1rem;
+  background-color: rgba(var(--callout-rgb), 0.5);
+  border: 1px solid rgba(var(--callout-border-rgb), 0.3);
+  border-radius: var(--border-radius);
+}
+
+.code {
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.hero {
+  display: flex;
+  position: relative;
+  place-items: center;
+}
+
+.heroContent {
+  display: flex;
+  position: relative;
+  z-index: 0;
+  padding-bottom: 4rem;
+  flex-direction: column;
+  gap: 2rem;
+  justify-content: space-between;
+  align-items: center;
+  width: auto;
+  font-family: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+    "Segoe UI Symbol", "Noto Color Emoji";
+  padding-top: 48px;
+
+  @media (min-width: 768px) {
+    padding-top: 4rem;
+    padding-bottom: 6rem;
+  }
+  @media (min-width: 1024px) {
+    padding-top: 5rem;
+    padding-bottom: 8rem;
+  }
+}
+
+.logos {
+  display: flex;
+  z-index: 50;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(25%, auto));
+  max-width: 100%;
+  width: var(--max-width);
+}
+
+.card {
+  padding: 1rem 1.2rem;
+  border-radius: var(--border-radius);
+  background: rgba(var(--card-rgb), 0);
+  border: 1px solid rgba(var(--card-border-rgb), 0);
+  transition: background 200ms, border 200ms;
+}
+
+.card span {
+  display: inline-block;
+  transition: transform 200ms;
+}
+
+.card h2 {
+  font-weight: 600;
+  margin-bottom: 0.7rem;
+}
+
+.card p {
+  margin: 0;
+  opacity: 0.6;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  max-width: 30ch;
+}
+
+@media (prefers-reduced-motion) {
+  .card:hover span {
+    transform: none;
+  }
+}
+
+/* Mobile */
+@media (max-width: 700px) {
+  .content {
+    padding: 4rem;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+    margin-bottom: 120px;
+    max-width: 320px;
+    text-align: center;
+  }
+
+  .card {
+    padding: 1rem 2.5rem;
+  }
+
+  .card h2 {
+    margin-bottom: 0.5rem;
+  }
+
+  .center {
+    padding: 8rem 0 6rem;
+  }
+
+  .center::before {
+    transform: none;
+    height: 300px;
+  }
+
+  .description {
+    font-size: 0.8rem;
+  }
+
+  .description a {
+    padding: 1rem;
+  }
+
+  .description p,
+  .description div {
+    display: flex;
+    justify-content: center;
+    position: fixed;
+    width: 100%;
+  }
+
+  .description p {
+    align-items: center;
+    inset: 0 0 auto;
+    padding: 2rem 1rem 1.4rem;
+    border-radius: 0;
+    border: none;
+    border-bottom: 1px solid rgba(var(--callout-border-rgb), 0.25);
+    background: linear-gradient(
+      to bottom,
+      rgba(var(--background-start-rgb), 1),
+      rgba(var(--callout-rgb), 0.5)
+    );
+    background-clip: padding-box;
+    backdrop-filter: blur(24px);
+  }
+
+  .description div {
+    align-items: flex-end;
+    pointer-events: none;
+    inset: auto 0 0;
+    padding: 2rem;
+    height: 200px;
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgb(var(--background-end-rgb)) 40%
+    );
+    z-index: 1;
+  }
+}
+
+/* Enable hover only on non-touch devices */
+@media (hover: hover) and (pointer: fine) {
+  .card:hover {
+    background: rgba(var(--card-rgb), 0.1);
+    border: 1px solid rgba(var(--card-border-rgb), 0.15);
+  }
+
+  .card:hover span {
+    transform: translateX(4px);
+  }
+}
+
+.circles {
+  position: absolute;
+  min-width: 614px;
+  min-height: 614px;
+  pointer-events: none;
+}
+
+.logo {
+  z-index: 50;
+  width: 120px;
+  height: 120px;
+}
+
+.logoGradientContainer {
+  display: flex;
+  position: absolute;
+  z-index: 50;
+  justify-content: center;
+  align-items: center;
+  width: 16rem;
+  height: 16rem;
+}
+
+.turborepoWordmarkContainer {
+  display: flex;
+  z-index: 50;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+  flex-direction: column;
+  gap: 1.25rem;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+
+  @media (min-width: 1024px) {
+    gap: 1.5rem;
+  }
+}
+
+.turborepoWordmark {
+  width: 160px;
+  fill: white;
+
+  @media (min-width: 768px) {
+    width: 200px;
+  }
+}
+
+.code {
+  font-family: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-weight: 700;
+}
+
+/* Tablet and Smaller Desktop */
+@media (min-width: 701px) and (max-width: 1120px) {
+  .grid {
+    grid-template-columns: repeat(2, 50%);
+  }
+}
+
+/* Gradients */
+.gradient {
+  position: absolute;
+  mix-blend-mode: normal;
+  will-change: filter;
+  pointer-events: none;
+}
+
+.gradientSmall {
+  filter: blur(32px);
+}
+
+.gradientLarge {
+  filter: blur(75px);
+}
+
+.glowConic {
+  background-image: var(--glow-conic);
+}
+
+.logoGradient {
+  opacity: 0.9;
+  width: 120px;
+  height: 120px;
+}
+
+.backgroundGradient {
+  top: -500px;
+  width: 1000px;
+  height: 1000px;
+  opacity: 0.15;
+}
+
+.button {
+  background-color: #ffffff;
+  border-radius: 8px;
+  border-style: none;
+  box-sizing: border-box;
+  color: #000000;
+  cursor: pointer;
+  display: inline-block;
+  font-size: 16px;
+  height: 40px;
+  line-height: 20px;
+  list-style: none;
+  margin: 0;
+  outline: none;
+  padding: 10px 16px;
+  position: relative;
+  text-align: center;
+  text-decoration: none;
+  transition: color 100ms;
+  vertical-align: baseline;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.button:hover,
+.button:focus {
+  background-color: #e5e4e2;
+}
+```
+
+`apps/merchant-app/app/page.module.css` (below) is **byte-for-byte identical** to
+this file — both apps got it from the same `create-turbo` template, and neither app
+has customized it, so you can literally copy this file across rather than retyping
+it.
+
+### `apps/user-app/next-env.d.ts`
+
+```ts
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/basic-features/typescript for more information.
+```
+
+Auto-generated by Next.js the first time you run `next dev` — you technically don't
+need to hand-create this; it regenerates itself. Listed here purely for completeness
+since it is genuinely part of the file tree.
+
+### `apps/user-app/public/*.svg`
+
+Four stock icons ship with every `create-turbo` app: `circles.svg` (the animated
+background rings on the homepage), `next.svg`, `turborepo.svg`, and `vercel.svg`
+(logo marks). None of the starter's actual pages render any of these yet (`page.tsx`
+doesn't `<Image>` them in) — they're just present because `create-turbo` puts them in
+`public/` by default and nothing deletes them. If you want the exact bytes, grab them
+from the official `create-turbo` template output (`npx create-turbo@latest` will
+produce identical files) rather than hand-copying SVG paths here — they're pure
+static assets with no logic to explain.
+
+### `apps/user-app/README.md`
+
+```md
+## Getting Started
+
+First, run the development server:
+
+\`\`\`bash
+yarn dev
+\`\`\`
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+To create [API routes](https://nextjs.org/docs/app/building-your-application/routing/router-handlers) add an `api/` directory to the `app/` directory with a `route.ts` file. For individual endpoints, create a subfolder in the `api` directory, like `api/hello/route.ts` would map to [http://localhost:3000/api/hello](http://localhost:3000/api/hello).
+
+## Learn More
+
+To learn more about Next.js, take a look at the following resources:
+
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn/foundations/about-nextjs) - an interactive Next.js tutorial.
+
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_source=github.com&utm_medium=referral&utm_campaign=turborepo-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/deployment) for more details.
+```
+
+Left completely stock — it still says `yarn dev` and port 3000, even though this
+project uses `pnpm` and this specific app runs on port 3001. Another honest marker
+that this is the unedited generator output; feel free to correct it in your own repo,
+but the starter as captured does not.
+
+### `apps/user-app/.env`
+
+```
+JWT_SECRET=test
+NEXTAUTH_URL=http://localhost:3001
+```
+
+`JWT_SECRET` backs the `secret` field in `authOptions` (falls back to the literal
+string `"secret"` if unset — fine for local dev, never for production).
+`NEXTAUTH_URL` tells NextAuth what its own base URL is, which it needs to construct
+correct OAuth callback URLs and cookies — critical to set correctly once you deploy
+somewhere that isn't `localhost:3001`.
+
+Sanity-check this app in isolation:
+
+```bash
+pnpm --filter user-app dev
+```
+
+---
+
+## 10. Step 9 — `merchant-app`: Google OAuth
+
+```bash
+cd apps/merchant-app
+pnpm add next react react-dom next-auth recoil
+pnpm add -D typescript @types/node @types/react @types/react-dom tailwindcss postcss autoprefixer eslint
+cd ../..
+pnpm install
+```
+
+### `apps/merchant-app/package.json`
+
+```json
+{
+  "name": "merchant-app",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@repo/db": "workspace:*",
+    "@repo/store": "workspace:*",
+    "@repo/ui": "workspace:*",
+    "next": "^14.2.3",
+    "next-auth": "^4.24.7",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recoil": "^0.7.7"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@types/node": "^20.12.7",
+    "@types/react": "^18.2.79",
+    "@types/react-dom": "^18.2.25",
+    "autoprefixer": "^10.4.19",
+    "eslint": "^8.57.0",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.4.5"
+  }
+}
+```
+
+No `-p` flag on `dev` this time — `merchant-app` runs on Next.js's default port
+3000, distinct from `user-app`'s 3001.
+
+### `apps/merchant-app/.eslintrc.js`
+
+```js
+/** @type {import("eslint").Linter.Config} */
+module.exports = {
+  root: true,
+  extends: ["@repo/eslint-config/next.js"],
+  parser: "@typescript-eslint/parser",
+  parserOptions: {
+    project: true,
+  },
+};
+```
+
+### `apps/merchant-app/next.config.js`
+
+```js
+/** @type {import('next').NextConfig} */
+module.exports = {
+  transpilePackages: ["@repo/ui"],
+};
+```
+
+### `apps/merchant-app/tailwind.config.js`
+
+```js
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+    "../../packages/ui/**/*.{js,ts,jsx,tsx,mdx}"
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+```
+
+### `apps/merchant-app/postcss.config.js`
+
+```js
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+```
+
+### `apps/merchant-app/app/globals.css`
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+### `apps/merchant-app/provider.tsx`
 
 ```tsx
 "use client"
-export const Providers = ({children}) => (
-  <RecoilRoot>
-    <SessionProvider>{children}</SessionProvider>
-  </RecoilRoot>
-)
-```
-
-Wrapping `children` in `RecoilRoot` makes the `packages/store` atom (§2.4) available
-anywhere in the tree via `useRecoilValue`/`useSetRecoilState`, even though nothing in
-this codebase actually calls those hooks yet. `SessionProvider` is what lets any client
-component further down the tree call `useSession()` without prop-drilling the session
-down manually — `AppbarClient` (§2.5) is the one component in this repo that actually
-relies on it.
-
----
-
-## 2. Stage 2 — Balances, on-ramp deposits, dashboard
-
-### 2.1 Data model (reconstructed from usage — see the note at the top of this doc)
-
-```prisma
-model User {
-  id       Int      @id @default(autoincrement())
-  number   String   @unique
-  password String?
-  name     String?
-  balance  Balance?
-  onRampTransactions OnRampTransaction[]
-  sentTransfers      P2pTransfer[] @relation("FromUser")
-  receivedTransfers  P2pTransfer[] @relation("ToUser")
-}
-
-model Merchant {
-  id        Int    @id @default(autoincrement())
-  email     String @unique
-  name      String?
-  auth_type String   // "Google"
-}
-
-model Balance {
-  id     Int  @id @default(autoincrement())
-  userId Int  @unique
-  amount Int  // paise
-  locked Int  // paise
-  user   User @relation(fields: [userId], references: [id])
-}
-
-model OnRampTransaction {
-  id        Int      @id @default(autoincrement())
-  status    OnRampStatus  // Processing | Success | Failure
-  token     String   @unique
-  provider  String
-  startTime DateTime
-  userId    Int
-  amount    Int      // paise
-  user      User     @relation(fields: [userId], references: [id])
-}
-
-model P2pTransfer {
-  id         Int      @id @default(autoincrement())
-  amount     Int      // paise
-  timestamp  DateTime
-  fromUserId Int
-  toUserId   Int
-  fromUser   User @relation("FromUser", fields: [fromUserId], references: [id])
-  toUser     User @relation("ToUser", fields: [toUserId], references: [id])
+import { RecoilRoot } from "recoil";
+import { SessionProvider } from "next-auth/react";
+export const Providers = ({children}: {children: React.ReactNode}) => {
+    return <RecoilRoot>
+        <SessionProvider>
+            {children}
+        </SessionProvider>
+    </RecoilRoot>
 }
 ```
 
-Why `P2pTransfer` needs two `@relation(...)` names: it has **two** foreign keys into the
-same `User` table (`fromUserId` and `toUserId`). Without explicit relation names Prisma
-can't tell which `User`-side field (`sentTransfers` vs `receivedTransfers`) corresponds
-to which `P2pTransfer` foreign key, and schema generation fails with an ambiguous
-relation error. Money is stored as `Int` (paise) everywhere, never `Float` — every place
-that renders an amount in the UI divides by 100 at render time (see `BalanceCard`,
-`OnRampTransactions` below), so no rounding error can ever creep into a stored balance.
+Identical in purpose and near-identical in code to `user-app`'s version (only
+whitespace differs) — both apps need Recoil + NextAuth context regardless of which
+auth *provider* (Credentials vs Google) they use underneath.
 
-### 2.2 `apps/bank-webhook/src/index.ts` — the simulated bank
-
-```ts
-const app = express();
-app.use(express.json());
-
-app.post("/hdfcWebhook", async (req, res) => {
-  const paymentInformation = {
-    token: req.body.token,
-    userId: req.body.user_identifier,
-    amount: req.body.amount
-  };
-  try {
-    await db.$transaction([
-      db.balance.updateMany({
-        where: { userId: Number(paymentInformation.userId) },
-        data: { amount: { increment: Number(paymentInformation.amount) } }
-      }),
-      db.onRampTransaction.updateMany({
-        where: { token: paymentInformation.token },
-        data: { status: "Success" }
-      })
-    ]);
-    res.json({ message: "Captured" });
-  } catch (e) {
-    console.error(e);
-    res.status(411).json({ message: "Error while processing webhook" });
-  }
-});
-
-app.listen(3003);
-```
-
-Step by step:
-
-1. `express.json()` middleware parses the incoming request body so `req.body.token`
-   etc. are available synchronously.
-2. The handler pulls three fields out of whatever the "bank" (in reality: a `curl`
-   command or Postman during testing) posted — no schema validation at all, flagged in
-   the source with `//TODO: Add zod validation here?`.
-3. `db.$transaction([...])` — the **array** form. Both operations run inside one
-   database transaction (either both commit or, if either throws, neither does), but
-   Prisma does *not* let the second operation read the first operation's result — it's
-   "fire both statements atomically," not "read-then-write." That's fine here because
-   neither statement depends on the other's outcome; they're just two independent
-   updates that should succeed or fail together for consistency.
-4. `db.balance.updateMany(...)` matches **purely on `userId`** — it does not check the
-   token at all. This means: *any* POST to this endpoint with a valid `userId` and
-   `amount` will credit that user's balance, whether or not the `token` matches a real,
-   pending `OnRampTransaction`. The **second** statement — the `onRampTransaction`
-   update, matched by `token` — is what actually gates whether a transaction record
-   flips to `"Success"`. If the token doesn't match anything, that `updateMany` matches
-   zero rows (Prisma does not throw on this — `updateMany` succeeds with `count: 0`),
-   but the balance increment from the first statement has already happened regardless.
-   This is worth knowing before ever exposing this endpoint outside a local dev/test
-   environment: it currently trusts the caller's claimed `userId` and `amount` outright.
-5. `updateMany` (rather than `update`) is used specifically because it never throws a
-   "record not found" error the way `update` does on a missing unique key — it silently
-   matches zero-or-more rows. That keeps a malformed or already-processed webhook call
-   from crashing the process; it just becomes a no-op for that branch.
-6. On any thrown error (e.g. a DB connectivity issue), the handler returns HTTP `411`
-   with a generic message — not a semantically meaningful status code for this kind of
-   failure, but it's what's actually implemented, so any client testing against this
-   webhook should treat "not 200" as failure regardless of the exact code.
-
-This file is bundled with **esbuild**, not `tsc`, because it's a single entry-point
-service with no complex type-checking pipeline to gate on — esbuild's speed matters
-more than `tsc`'s incremental build graph for a one-file app like this.
-
-### 2.3 `apps/user-app/app/lib/actions/createOnrampTransaction.ts` — the "add money" server action
-
-```ts
-"use server";
-export async function createOnRampTransaction(provider: string, amount: number) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user || !session.user?.id) return { message: "Unauthenticated request" };
-
-  const token = (Math.random() * 1000).toString();
-  await prisma.onRampTransaction.create({
-    data: {
-      provider,
-      status: "Processing",
-      startTime: new Date(),
-      token,
-      userId: Number(session?.user?.id),
-      amount: amount * 100
-    }
-  });
-  return { message: "Done" };
-}
-```
-
-Because this file starts with `"use server"`, Next.js compiles it into a real HTTP
-endpoint under the hood and generates a client-safe stub — from the browser's point of
-view, calling `createOnRampTransaction(provider, value)` inside `AddMoneyCard` (§2.5)
-looks like a normal async function call, but it actually performs a network round-trip
-to the server, where the code above runs with full access to `getServerSession` and
-`prisma`. Key details:
-
-- The **auth check happens first**, before touching the database, and returns early
-  with an unauthenticated message if there's no session — even though nothing in the
-  current UI ever calls this action while logged out, this is the actual server-side
-  boundary that prevents a crafted request from creating transactions for no user.
-- `amount * 100` — the UI collects a plain rupee amount (e.g. `500`); this is where it's
-  converted to paise before ever touching the database, keeping the "always store
-  integers" invariant from §2.1.
-- The random `token` stands in for what a real payment gateway would hand back as a
-  correlation ID. It's generated *before* the bank has been contacted at all — this
-  action's whole job is just to record "I am about to attempt a ₹500 deposit via HDFC,
-  here's a token to match it against later," then the UI redirects the browser to the
-  (fake) bank page, and the bank-webhook handler above is what later marks this specific
-  row `"Success"` by matching on that same token.
-
-### 2.4 `packages/store` — the (currently unused) Recoil balance atom
-
-```ts
-// atoms/balance.ts
-export const balanceAtom = atom<number>({ key: "balance", default: 0 });
-
-// hooks/useBalance.ts
-export const useBalance = () => useRecoilValue(balanceAtom);
-
-// index.ts
-export {};
-```
-
-This package defines a Recoil atom and a convenience hook for reading it, but **nothing
-in `user-app` or `merchant-app` currently imports `useBalance` or sets `balanceAtom`** —
-`BalanceCard` instead receives its `amount`/`locked` props directly from the server
-component that fetched them via Prisma (`transfer/page.tsx`, §2.5). The `index.ts` only
-re-exports an empty object (`export {}`), meaning `atoms/balance.ts` and
-`hooks/useBalance.ts` aren't even reachable via `@repo/store`'s public entry point today
-— a consumer would have to reach into `@repo/store/src/hooks/useBalance` directly. This
-package exists as scaffolding for a future client-side, globally-shared balance display
-(e.g. showing the balance in the Appbar itself) that hasn't been wired up yet.
-
-### 2.5 `@repo/ui` components used by the wallet
-
-- **`card.tsx`** — a plain bordered container: `<h1>` for the `title` prop, then
-  `<div>{children}</div>` for the body. (The original course guide's version of this
-  file wrapped `children` in a `<p>` tag instead of a `<div>` — see deviation #7 in §5;
-  the version in this repo has already been corrected.)
-- **`Center.tsx`** — `<div className="flex justify-center flex-col h-full">` wrapping
-  another centered `<div>`, used only by `SendCard` (§3.3) to center the "Send" card
-  both vertically and horizontally within its `90vh` parent.
-- **`Select.tsx`** — a controlled `<select>` where each option carries a `key` (used as
-  both the React key and the value passed to `onSelect`) separate from its display
-  `value`. `AddMoneyCard` uses this so the internal bank *name* string doubles as the
-  key without needing a separate numeric id per bank.
-- **`TextInput.tsx`** — a labeled, controlled text input; every field in this app
-  (amount, phone number for P2P) is one of these, with validation left entirely to the
-  server action that eventually receives the value.
-- **`button.tsx`** — a single styled `<button>` taking `onClick` and `children`; used
-  everywhere a click needs to trigger a server action or a `signIn`/`signOut` call.
-- **`Appbar.tsx`** — the shared top bar: shows "PayTM" and a single button that's either
-  "Login" or "Logout" depending on whether a `user` prop is present, wired by the caller
-  to `onSignin`/`onSignout`.
-
-### 2.6 `apps/user-app` dashboard layout and pages
-
-- **`app/(dashboard)/layout.tsx`** — a Next.js **route group**. The parentheses around
-  `(dashboard)` mean this folder groups `dashboard/`, `transfer/`, `transactions/`, and
-  `p2p/` under one shared layout (a fixed-width sidebar with four `SidebarItem`s) without
-  `(dashboard)` itself ever appearing in the URL — `/dashboard`, `/transfer`, etc. are
-  all real, top-level paths.
-- **`components/SidebarItem.tsx`** — a client component that reads the current path via
-  `usePathname()`, compares it to its own `href` prop, and conditionally applies a
-  highlight color (`text-[#6a51a6]`) when it's the active route; clicking it calls
-  `router.push(href)` for client-side navigation without a full page reload.
-- **`app/(dashboard)/transfer/page.tsx`** — an **async Server Component**. This is the
-  key App Router capability being exercised here: `getBalance()` and
-  `getOnRampTransactions()` are plain `async` functions defined in the same file that
-  call `getServerSession` + `prisma.balance.findFirst` / `prisma.onRampTransaction.findMany`
-  directly, with **no API route in between** — the component itself runs entirely on the
-  server, fetches its own data, and streams fully-rendered HTML to the browser. If
-  there's no balance row yet, `getBalance()` falls back to `{ amount: 0, locked: 0 }`
-  rather than crashing.
-- **`components/AddMoneyCard.tsx`** — a client component. On mount it defaults
-  `provider`/`redirectUrl` to the first entry in `SUPPORTED_BANKS` (HDFC). Typing into
-  the `TextInput` updates local `value` state; changing the `Select` swaps both
-  `provider` and `redirectUrl` to match the chosen bank. Clicking "Add Money" does two
-  things in sequence: `await createOnRampTransaction(provider, value)` (creates the
-  `Processing` row server-side, §2.3), *then* `window.location.href = redirectUrl` — the
-  browser only navigates away to the fake bank page after the transaction record has
-  been safely persisted.
-- **`components/BalanceCard.tsx`** — a pure presentational component; every displayed
-  number is the raw paise value divided by 100, including a computed "Total Balance"
-  row (`(locked + amount) / 100`) that's never fetched directly from the database — it's
-  derived in the component itself from the two other values passed in as props.
-- **`components/OnRampTransactions.tsx`** — renders an empty state ("No Recent
-  transactions") when the array is empty, otherwise one row per transaction showing the
-  date (`t.time.toDateString()`) and a `+ Rs {t.amount / 100}` line. Every entry is
-  rendered as an *incoming* transaction (`+`) regardless of its actual `status` field —
-  there's no visual distinction in this component between `Processing`, `Success`, and
-  `Failure` rows, something to be aware of if you deposit money and immediately check
-  this list before the webhook has fired.
-- **`app/layout.tsx`** — wraps every page in `<Providers>` → `<AppbarClient />` → page
-  content, inside a full-viewport `bg-[#ebe6e6]` background `div`, so the header appears
-  on literally every route, including the sign-in page itself.
-- **`components/AppbarClient.tsx`** — the client-side wrapper around the shared
-  `Appbar`: reads `useSession()` for the `user` prop, passes NextAuth's `signIn`
-  directly through as `onSignin`, but wraps `signOut` in its own async function that
-  calls `router.push("/api/auth/signin")` immediately afterward — without this explicit
-  redirect, `signOut()` alone would leave the browser sitting on whatever protected page
-  it was already on, now with no session.
-- **`app/page.tsx`** — the root route is a pure routing gate: an async Server Component
-  that calls `getServerSession`, then `redirect('/dashboard')` if logged in or
-  `redirect('/api/auth/signin')` if not. Nothing is ever actually rendered here; both
-  branches throw Next.js's internal redirect signal before any JSX would matter.
-- **`app/api/user/route.ts`** — a small `GET` API route (not used by any UI in this
-  repo, but present): returns the session's `user` object as JSON with `200`, or a
-  `403` with `{ message: "You are not logged in" }` if there's no session. Useful as a
-  quick `curl`-able health check for "is my session cookie valid."
-
----
-
-## 3. Stage 3 — P2P transfers
-
-### 3.1 `apps/user-app/app/lib/actions/p2pTransfer.tsx` — the transaction that matters most
-
-```ts
-"use server"
-export async function p2pTransfer(to: string, amount: number) {
-  const session = await getServerSession(authOptions);
-  const from = session?.user?.id;
-  if (!from) return { message: "Error while sending" };
-
-  const toUser = await prisma.user.findFirst({ where: { number: to } });
-  if (!toUser) return { message: "User not found" };
-
-  await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT * FROM "Balance" WHERE "userId" = ${Number(from)} FOR UPDATE`;
-
-    const fromBalance = await tx.balance.findUnique({ where: { userId: Number(from) } });
-    if (!fromBalance || fromBalance.amount < amount) {
-      throw new Error('Insufficient funds');
-    }
-
-    await tx.balance.update({ where: { userId: Number(from) }, data: { amount: { decrement: amount } } });
-    await tx.balance.update({ where: { userId: toUser.id }, data: { amount: { increment: amount } } });
-    await tx.p2pTransfer.create({
-      data: { fromUserId: Number(from), toUserId: toUser.id, amount, timestamp: new Date() }
-    });
-  });
-}
-```
-
-Walking through exactly why each line exists, in order:
-
-1. **Auth check, again, first.** Same pattern as `createOnRampTransaction` — no database
-   work happens before confirming there's a logged-in sender.
-2. **Look up the recipient by phone number.** `prisma.user.findFirst({ where: { number:
-   to } })` — if nobody has that number, the function returns early with `"User not
-   found"`, before ever opening a transaction. This means a typo'd recipient number
-   costs nothing and touches no locks.
-3. **Enter the interactive `$transaction(async (tx) => {...})` form** — different from
-   the webhook's array form (§2.2) because this operation genuinely needs to *read*
-   something (the sender's current balance) and make a *decision* based on that read
-   (enough funds or not) before deciding what to write. The array form can't express
-   "read, then conditionally write."
-4. **`SELECT * FROM "Balance" WHERE "userId" = ${from} FOR UPDATE`** — a raw SQL escape
-   hatch, used because Prisma's query builder has no first-class API for requesting a
-   row-level lock. `FOR UPDATE` tells Postgres: "any other transaction that also tries
-   to `SELECT ... FOR UPDATE` (or write to) this same row must wait until *this*
-   transaction commits or rolls back." This is the entire concurrency-safety mechanism
-   for this function. Without it: two P2P transfers initiated from the same sender at
-   nearly the same instant could both run `findUnique` before either has written
-   anything, both see the same starting balance, both independently conclude "yes,
-   sufficient funds," and both proceed to decrement — overdrawing the account by the
-   second transfer's amount. With the lock in place, the second transaction's `SELECT
-   ... FOR UPDATE` blocks until the first transaction fully commits (updating the
-   balance), so by the time the second transaction's `findUnique` runs, it sees the
-   *already-decremented* balance and correctly rejects itself if funds are now
-   insufficient.
-5. **`tx.balance.findUnique` + the insufficient-funds guard.** Note this happens
-   *inside* the same `tx` used for the raw lock query — using the plain `prisma` client
-   here instead of `tx` would read outside the transaction/lock scope and defeat the
-   whole point of step 4.
-6. **`throw new Error('Insufficient funds')`** — this is how Prisma's interactive
-   `$transaction` callback signals "roll everything back." Nothing written before this
-   throw (in this case, nothing has been written yet at all — the throw happens before
-   either `update` call) survives; more importantly, if this throw happened *after* the
-   sender's balance had already been decremented, Prisma would undo that decrement too.
-   The caller (`p2pTransfer` itself) does not currently `catch` this specific error —
-   it propagates up and, as written today, the function returns `undefined` in the
-   failure case rather than a `{ message: ... }` object like the two early-return paths
-   above. `SendCard` (§3.3) does not currently inspect the return value at all, so from
-   the user's perspective an insufficient-funds rejection currently looks identical to
-   a successful transfer (no error is shown in the UI either way) — worth fixing if this
-   were taken further, though it was verified end-to-end (§6) that the *database
-   effects* are correctly rolled back regardless of what the UI shows.
-7. **Two `update` calls plus one `create`**, all still inside `tx`, so all three succeed
-   or all three roll back together: decrement sender, increment recipient, then log the
-   transfer itself as a `P2pTransfer` row for history/audit purposes. Order matters only
-   in that the decrement is written before the increment — with the row lock already
-   held from step 4, this ordering has no bearing on correctness, but it does mean if
-   something were to fail between the two `update` calls (e.g. a constraint violation on
-   the recipient's `userId`), the whole `$transaction` still rolls back the sender's
-   already-applied decrement, because both statements are inside the same transaction.
-
-### 3.2 `apps/user-app/components/SendCard.tsx` and the `/p2p` page
+### `apps/merchant-app/app/layout.tsx`
 
 ```tsx
-export function SendCard() {
-  const [number, setNumber] = useState("");
-  const [amount, setAmount] = useState("");
+import "./globals.css";
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import { Providers } from "../provider";
+
+const inter = Inter({ subsets: ["latin"] });
+
+export const metadata: Metadata = {
+  title: "Create Turborepo",
+  description: "Generated by create turbo",
+};
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}): JSX.Element {
   return (
-    <div className="h-[90vh]">
-      <Center>
-        <Card title="Send">
-          <TextInput placeholder="Number" label="Number" onChange={setNumber} />
-          <TextInput placeholder="Amount" label="Amount" onChange={setAmount} />
-          <Button onClick={async () => { await p2pTransfer(number, Number(amount) * 100) }}>
-            Send
-          </Button>
-        </Card>
-      </Center>
-    </div>
-  )
+    <html lang="en">
+      <Providers>
+        <body className={inter.className}>{children}</body>
+      </Providers>
+    </html>
+  );
 }
 ```
 
-This is the first place `Center` (built in Stage 2 but unused until now) is actually
-rendered — it vertically **and** horizontally centers the "Send" card inside a
-`90vh`-tall wrapper. Both fields are plain local `useState` strings with zero validation
-on the client: a non-numeric amount becomes `NaN` after `Number(amount)`, which then
-multiplies by `100` to also produce `NaN`, which Prisma will reject when it tries to
-write an `Int` field — so malformed input surfaces as a thrown/rejected server action
-rather than a friendly inline error message. Every real constraint (missing recipient,
-insufficient funds) is enforced entirely inside `p2pTransfer` on the server, by design —
-the client never needs to be trusted.
+Same untouched `create-turbo` metadata as `user-app` — `merchant-app` never gets a
+custom title/description at any stage covered by these guides, unlike `user-app`
+which picks up `"Wallet"` in Stage 2.
 
-`app/(dashboard)/p2p/page.tsx` is a one-line wrapper: `<div className="w-full"><SendCard
-/></div>` — no data-fetching of its own, since `SendCard` needs nothing from the server
-until the moment "Send" is actually clicked.
+### `apps/merchant-app/app/page.tsx`
 
-### 3.3 Sidebar update
+```tsx
+"use client";
 
-`app/(dashboard)/layout.tsx`'s sidebar gained a fourth `SidebarItem` pointing at `/p2p`,
-with an inline SVG diagonal arrow icon (`P2PTransferIcon`, sourced from Heroicons) drawn
-directly in the layout file alongside the other three icon functions (`HomeIcon`,
-`TransferIcon`, `TransactionsIcon`) rather than as separate component files.
+import { useBalance } from "@repo/store/balance";
 
----
-
-## 4. Stage 4 — Docker + CI/CD
-
-### 4.1 `docker/Dockerfile.user` — step by step
-
-```dockerfile
-FROM node:20.12.0-alpine3.19
-WORKDIR /usr/src/app
-RUN corepack enable
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
-COPY apps ./apps
-COPY packages ./packages
-RUN pnpm install --frozen-lockfile
-RUN cd packages/db && npx prisma generate && cd ../..
-RUN pnpm run build
-CMD ["npm", "run", "start-user-app"]
+export default function() {
+  const balance = useBalance();
+  return <div>
+    hi there {balance}
+  </div>
+}
 ```
 
-1. **`node:20.12.0-alpine3.19`** — Alpine keeps the final image small, at the cost of
-   using `musl` libc instead of `glibc`. This matters directly for `bcrypt`, which is a
-   native addon (`@mapbox/node-pre-gyp` fetches a prebuilt `.node` binary matching the
-   platform/libc combination at install time, or falls back to compiling from source if
-   no matching prebuilt exists) — worth remembering if a *future* native dependency
-   fails mysteriously only inside this container and not on a developer's own machine.
-2. **`corepack enable`** — activates the `packageManager` field pinned in the root
-   `package.json` (see deviation #11 in §5), so the exact pnpm version this repo was
-   built and tested against is what actually runs `pnpm install` inside the image,
-   rather than whatever pnpm happens to be baked into the base Node image.
-3. **Copying manifests before source** (`package.json`, `pnpm-lock.yaml`,
-   `pnpm-workspace.yaml`, `turbo.json` first; `apps`/`packages` after) is the standard
-   Docker layer-caching trick — if only application code changes between builds (not
-   dependencies), Docker can reuse the cached `pnpm install` layer and skip straight to
-   copying the new source, since the manifest-only layer's hash hasn't changed. As
-   written here, `apps` and `packages` are copied in two separate steps right after, so
-   this caching benefit is realized as long as dependency files genuinely didn't change.
-4. **`pnpm install --frozen-lockfile`** — installs from the workspace lockfile exactly
-   as pinned, refusing to update it; this is the correct install flag for CI/CD (as
-   opposed to local development, where a plain `pnpm install` is fine).
-5. **`npx prisma generate`** run explicitly, scoped into `packages/db`, at **build
-   time** — this regenerates the Prisma Client's TypeScript types and query engine
-   binary matching the container's own platform, so the compiled app doesn't need the
-   `prisma` CLI (or any network access to fetch engine binaries) present at container
-   *start* time — only at build time.
-6. **`pnpm run build`** — this invokes Turborepo's `build` pipeline, which (per
-   `turbo.json`'s task graph) builds **every** app in the monorepo — `bank-webhook`,
-   `merchant-app`, and `user-app` — even though this particular image only ever runs
-   `user-app`. The most direct optimization available here, not currently applied,
-   would be `turbo build --filter=user-app...` (the `...` including its workspace
-   dependencies) to skip building the other two apps entirely.
-7. **`CMD ["npm", "run", "start-user-app"]`** — the container's actual entrypoint at
-   runtime. This resolves to the root `package.json` script:
-   ```json
-   "start-user-app": "cd ./apps/user-app && npm run start"
-   ```
-   which in turn runs Next.js's own `next start` inside `user-app`'s directory, serving
-   the already-built `.next` output from step 6. The reason this indirection exists (a
-   root script that `cd`s into the app, rather than the Dockerfile `CMD`-ing directly
-   into the app's directory) is so the exact same `CMD` line keeps working even if the
-   underlying app-level start script changes.
+This is genuinely the entire merchant homepage at this stage: it reads the shared
+Recoil balance atom (via `@repo/store/balance`) and renders it. Since nothing ever
+calls a setter on `balanceAtom`, this will always print `hi there 0` — it exists to
+prove the `@repo/store` package resolves and works across the workspace boundary,
+nothing more sophisticated yet.
 
-### 4.2 CI — `.github/workflows/build.yml`
+### `apps/merchant-app/lib/auth.ts`
 
-Triggers on every pull request targeting `main`. Steps: checkout the repo → set up Node
-20 → `pnpm install --frozen-lockfile` → `pnpm run build`. Its entire purpose is to fail
-the PR check if the monorepo doesn't build cleanly — catching a broken build **before**
-it's merged, rather than after the CD pipeline (§4.3) has already tried to build and
-deploy it.
+Note the path: `lib/auth.ts` **at the app root**, not under `app/` — the asymmetry
+called out at the top of this guide.
 
-### 4.3 CD — `.github/workflows/push.yml`
+```ts
+import GoogleProvider from "next-auth/providers/google";
+import db from "@repo/db/client";
 
-Triggers on every push to `main`. Steps, in order:
+export const authOptions = {
+    providers: [
+        GoogleProvider({
+            clientId: process.env.GOOGLE_CLIENT_ID || "",
+            clientSecret: process.env.GOOGLE_CLIENT_SECRET || ""
+        })
+    ],
+    callbacks: {
+      async signIn({ user, account }: {
+        user: {
+          email: string;
+          name: string
+        },
+        account: {
+          provider: "google" | "github"
+        }
+      }) {
+        console.log("hi signin")
+        if (!user || !user.email) {
+          return false;
+        }
 
-1. Checkout the repo.
-2. Copy `docker/Dockerfile.user` to the repo root — necessary because Docker's build
-   context is normally the directory containing the Dockerfile, and this Dockerfile's
-   `COPY apps ./apps` / `COPY packages ./packages` lines need the repo root as their
-   context, not the `docker/` subfolder.
-3. Log in to Docker Hub using the `DOCKER_USERNAME`/`DOCKER_PASSWORD` repo secrets.
-4. Build and push the image.
-5. Pull the just-pushed image back down as a basic sanity check that the push actually
-   succeeded and the image is pullable.
-6. SSH into an EC2 instance (using `SSH_HOST`/`SSH_USERNAME`/`SSH_KEY` secrets) and run:
-   ```bash
-   sudo docker pull <user>/web-app:latest
-   sudo docker stop web-app || true
-   sudo docker rm web-app || true
-   sudo docker run -d --name web-app -p 3005:3000 <user>/web-app:latest
-   ```
+        await db.merchant.upsert({
+          select: {
+            id: true
+          },
+          where: {
+            email: user.email
+          },
+          create: {
+            email: user.email,
+            name: user.name,
+            auth_type: account.provider === "google" ? "Google" : "Github" // Use a prisma type here
+          },
+          update: {
+            name: user.name,
+            auth_type: account.provider === "google" ? "Google" : "Github" // Use a prisma type here
+          }
+        });
 
-The `|| true` after `stop` and `rm` is what makes this script idempotent across repeated
-deploys — the very first deploy has no existing `web-app` container to stop or remove,
-and without `|| true` those commands would exit non-zero and abort the rest of the
-script (including the crucial `docker run` line) on that very first run.
+        return true;
+      }
+    },
+    secret: process.env.NEXTAUTH_SECRET || "secret"
+  }
+```
 
-### 4.4 One-time manual setup
+Contrast this against `user-app`'s Credentials setup:
 
-**GitHub repo secrets** (Settings → Secrets and variables → Actions):
+- **No** `authorize` **function** — Google handles the actual authentication (password,
+2FA, etc. all happen on Google's side); NextAuth just receives back a verified
+`user.email`/`user.name` once Google's OAuth flow completes.
+- `signIn` **callback instead of** `session` **callback** — this runs once, right after
+Google confirms the user's identity, and its job is to *sync* that identity into
+our own database. `db.merchant.upsert` means: if a `Merchant` row with this email
+already exists, update its `name`/`auth_type`; if not, create it. Returning `true`
+from this callback tells NextAuth "yes, let this sign-in proceed"; returning
+`false` (as happens when `user.email` is missing) blocks the login entirely.
+- The inline comment `// Use a prisma type here` next to the ternary
+`account.provider === "google" ? "Google" : "Github"` is a leftover TODO —
+`account.provider` is already typed as the literal union `"google" | "github"` in
+the function signature above it, so this ternary could just as well use the
+`AuthType` enum from the Prisma schema directly instead of hand-writing the string
+literals — left as an exercise rather than fixed in the starter.
+- **No** `session` **callback** at all here — unlike `user-app`, `merchant-app` never
+stitches a database ID onto `session.user`. Anything that needs the merchant's
+numeric ID later would need to look it up by email instead.
 
-| Secret | Value |
-|---|---|
-| `DOCKER_USERNAME` | Docker Hub username |
-| `DOCKER_PASSWORD` | A Docker Hub **access token** (not the literal account password) |
-| `SSH_HOST` | Public IP of the EC2 instance |
-| `SSH_USERNAME` | `ubuntu` (default for Ubuntu AMIs) |
-| `SSH_KEY` | Full contents of the `.pem` private key |
+### `apps/merchant-app/app/api/auth/[...nextauth]/route.ts`
 
-**EC2 instance, once:**
+```ts
+import NextAuth from "next-auth"
+import { authOptions } from "../../../../lib/auth"
+
+const handler = NextAuth(authOptions)
+
+export { handler as GET, handler as POST }
+```
+
+Four `../` segments this time, not three — climbing from
+`app/api/auth/[...nextauth]/` up past `app/` itself to reach the app-root-level
+`lib/auth.ts`. Get this path wrong (e.g. copy `user-app`'s three-`../` version
+verbatim) and you'll get a module-not-found error at build time — this is exactly
+the kind of subtle bug the folder-layout asymmetry invites.
+
+### `apps/merchant-app/app/api/user/route.ts`
+
+```ts
+import { NextResponse } from "next/server"
+import { PrismaClient } from "@repo/db/client";
+
+const client = new PrismaClient();
+
+export const GET = async () => {
+    await client.user.create({
+        data: {
+            email: "asd",
+            name: "adsads"
+        }
+    })
+    return NextResponse.json({
+        message: "hi there"
+    })
+}
+```
+
+Flagged in the original file comments as scratch/test code, and it's worth being
+explicit about *why* it's scratch: it (a) creates a **new** dummy `User` row on
+**every single request** with hardcoded junk data (`"asd"`/`"adsads"`), which will
+fail the second time you hit it if `User.email` has a `@unique` constraint (it does,
+per the schema above) — so this endpoint actually throws after the first call — and
+(b) instantiates a **fresh** `new PrismaClient()` directly here instead of importing
+the shared singleton from `packages/db/index.ts`, defeating the entire point of that
+singleton pattern. Left in the starter as-is; not something to build on top of.
+
+### `apps/merchant-app/app/page.module.css`
+
+Byte-for-byte identical to `apps/user-app/app/page.module.css` above — copy that
+file across rather than retyping it.
+
+### `apps/merchant-app/next-env.d.ts`
+
+```ts
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/basic-features/typescript for more information.
+```
+
+### `apps/merchant-app/public/*.svg`
+
+Same four stock `create-turbo` icons as `user-app` (`circles.svg`, `next.svg`,
+`turborepo.svg`, `vercel.svg`) — identical bytes, unused by any page here.
+
+### `apps/merchant-app/README.md`
+
+```md
+## Getting Started
+
+First, run the development server:
+
+\`\`\`bash
+yarn dev
+\`\`\`
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+To create [API routes](https://nextjs.org/docs/app/building-your-application/routing/router-handlers) add an `api/` directory to the `app/` directory with a `route.ts` file. For individual endpoints, create a subfolder in the `api` directory, like `api/hello/route.ts` would map to [http://localhost:3000/api/hello](http://localhost:3000/api/hello).
+
+## Learn More
+
+To learn more about Next.js, take a look at the following resources:
+
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn/foundations/about-nextjs) - an interactive Next.js tutorial.
+
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_source=github.com&utm_medium=referral&utm_campaign=turborepo-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/deployment) for more details.
+```
+
+Also unedited — and this time the port number it mentions (3000) actually *is*
+correct for `merchant-app`, unlike `user-app`'s copy of the same boilerplate.
+
+### `apps/merchant-app/.env`
+
+```
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+NEXTAUTH_SECRET=some-random-secret
+```
+
+Create the real credentials in the
+[Google Cloud Console](https://console.cloud.google.com/apis/credentials) →
+**Create Credentials → OAuth client ID → Web application**, with an authorized
+redirect URI of `http://localhost:3000/api/auth/callback/google` (NextAuth's
+Google provider constructs this exact callback path automatically; the console
+entry just has to match it).
+
+Sanity-check this app in isolation:
 
 ```bash
-ssh -i your-key.pem ubuntu@<EC2-IP>
-sudo apt-get update
-sudo apt-get install docker.io -y
-sudo systemctl enable --now docker
-sudo usermod -aG docker ubuntu
+pnpm --filter merchant-app dev
 ```
 
-Then open inbound port **3005** in the instance's security group — the single most
-common reason a first deploy "does nothing" despite every GitHub Actions step reporting
-green. Also update `push.yml`'s image tag (`100xdevs/web-app:latest` in the template) to
-your own Docker Hub namespace before the push step will succeed against your account.
+---
 
-**Known gap** (same as the original course guides): neither the Dockerfile nor the
-`docker run` line in `push.yml` passes real environment variables into the container, so
-`DATABASE_URL`/`JWT_SECRET`/`NEXTAUTH_URL` are unset at runtime unless `-e` flags or an
-env file are added to the deploy step. Left as a follow-up, not something this pipeline
-handles today.
+## 11. Step 10 — Run the Whole Monorepo
+
+```bash
+pnpm install
+pnpm dev
+```
+
+- `user-app` → [http://localhost:3001](http://localhost:3001) — try the Credentials login with any phone
+number/password; since no matching `User` row exists yet, the `authorize` function
+will create one on the spot (implicit sign-up), then log you straight in.
+- `merchant-app` → [http://localhost:3000](http://localhost:3000) — click Login, go through Google's OAuth
+consent screen, land back on `hi there 0`, and check `npx prisma studio` to
+confirm a `Merchant` row was upserted with your Google email.
+
+Turborepo's `dev` pipeline (from `turbo.json` in Step 2) runs both dev servers
+concurrently, uncached, and keeps streaming both apps' logs to your terminal.
 
 ---
 
-## 5. Deviations from the original course guides (and why)
+## 12. Official-Command Cheat Sheet
 
-Every item below was caught by an actual build failure or runtime error while getting
-this specific repo — on its actual, newer dependency versions — to compile and run, not
-by reading the guide and guessing.
 
-1. **pnpm instead of npm inside the Dockerfile.** This repo uses pnpm workspaces
-   end-to-end (`workspace:*` internal deps in `pnpm-lock.yaml`), which plain `npm
-   install` cannot resolve. Fixed by enabling Corepack and running `pnpm install
-   --frozen-lockfile`, copying `pnpm-lock.yaml`/`pnpm-workspace.yaml` instead of
-   `package-lock.json`.
+| Task                                              | Official command                                                            |
+| ------------------------------------------------- | --------------------------------------------------------------------------- |
+| Scaffold the whole monorepo                       | `pnpm dlx create-turbo@latest`                                              |
+| Add a new app/package to the monorepo             | `npx turbo gen workspace`                                                   |
+| Add a brand-new standalone Next.js app            | `pnpm dlx create-next-app@latest`                                           |
+| Init Tailwind in an app                           | `pnpm add -D tailwindcss postcss autoprefixer && npx tailwindcss init -p`   |
+| Init Prisma in `@repo/db`                         | `npx prisma init --datasource-provider postgresql`                          |
+| Run a DB migration                                | `npx prisma migrate dev --name <name>`                                      |
+| Regenerate Prisma Client                          | `npx prisma generate`                                                       |
+| Open Prisma Studio (DB GUI)                       | `npx prisma studio`                                                         |
+| Add a shared UI component via Turborepo generator | `pnpm turbo gen react-component`                                            |
+| Install a dep into one workspace only             | `pnpm --filter user-app add <package>`                                      |
+| Install a dev dep at the repo root                | `pnpm add -Dw <package>`                                                    |
+| Run one app's dev server                          | `pnpm --filter user-app dev`                                                |
+| Run everything                                    | `pnpm dev` (delegates to `turbo dev`)                                       |
+| Build everything                                  | `pnpm build` (delegates to `turbo build`)                                   |
+| Lint everything                                   | `pnpm lint` (delegates to `turbo lint`)                                     |
+| Enable Turborepo remote caching                   | `npx turbo login` then `npx turbo link`                                     |
+| Start local Postgres                              | `docker run -e POSTGRES_PASSWORD=mysecretpassword -d -p 5432:5432 postgres` |
 
-2. **Branch name `main`, not `master`.** Both workflow files were updated to trigger on
-   `main`, and the pinned Action versions were bumped past end-of-support
-   (`actions/checkout@v3/v2` → `v4`, `docker/login-action@v1` → `v3`,
-   `docker/build-push-action@v2` → `v5`).
-
-3. **Missing `@repo/typescript-config` dependency.** All three apps' `tsconfig.json`
-   files `extends` a workspace package that none of them declared as a
-   `devDependency` — invisible under npm's hoisted `node_modules`, but pnpm's strict,
-   symlinked `node_modules` rejects the phantom dependency outright
-   (`error TS6053: File '@repo/typescript-config/nextjs.json' not found`). Fixed by
-   adding the missing `"@repo/typescript-config": "workspace:*"` entries.
-
-4. **React version mismatch between `@repo/ui` and the apps.** `@repo/ui` was pinned to
-   React 19 while both Next.js 14 apps use React 18. Because `@repo/ui` ships raw
-   `.tsx` consumed via `transpilePackages` with no separate type-check boundary,
-   `ReactNode`/`JSX.Element` resolved inconsistently, producing `Type
-   'ReactElement<...>' is not assignable to type 'ReactNode'`. Fixed by pinning
-   `@repo/ui` down to React 18 (Next 14 doesn't support React 19, so downgrading `ui`
-   was the only viable direction).
-
-5. **Missing `apps/merchant-app/tsconfig.json`.** Unlike `user-app`, `merchant-app` had
-   none, so Next.js auto-generated a minimal one whose default `moduleResolution`
-   couldn't resolve `@repo/ui`'s subpath exports (`Cannot find module
-   '@repo/ui/appbar'`). Fixed by adding an explicit `tsconfig.json` extending
-   `@repo/typescript-config/nextjs.json`, matching `user-app`.
-
-6. **`existingUser.password` nullability.** `User.password` is optional in the schema,
-   but `authorize()` passed it straight into `bcrypt.compare()`, which expects a
-   non-null string — fine under a loose TS config, but a real type error under strict
-   mode. Fixed with an explicit `if (!existingUser.password) return null;` guard.
-
-7. **`<p>{children}</p>` in `packages/ui/src/card.tsx`.** The original guide's `Card`
-   rewrite wrapped `children` in a `<p>`. Every consumer passes `<div>`-based content,
-   and `<div>` is not valid inside `<p>` per the HTML spec, producing a live hydration
-   mismatch (`Warning: In HTML, %s cannot be a descendant of <p>`), reproduced in a
-   browser on the `/transfer` page during validation. Fixed by rendering
-   `<div>{children}</div>` instead — no visual change, no hydration error. (This fix is
-   already present in the version of `card.tsx` shown in §2.5.)
-
-8. **Port 5432 conflict with a native Windows Postgres service.** A Docker Postgres
-   container publishing `5432:5432` appeared to start fine, but `prisma migrate dev`
-   failed with `P1000: Authentication failed` because a separate, pre-existing native
-   Windows `postgres.exe` process was already bound to `localhost:5432` and silently
-   intercepting the connection. Fixed by publishing the container on `5433:5432` and
-   pointing every `DATABASE_URL` at `localhost:5433` — matches every `.env.example` file
-   in this repo, which all use port `5433`.
-
-9. **`@types/express@^4.19.0` doesn't exist.** The 4.x line of `@types/express` never
-   published a `4.19.x` release. Fixed by pinning `^4.17.21` — the version actually
-   resolved in `apps/bank-webhook`'s dependencies today.
-
-10. **`pnpm.onlyBuiltDependencies` needed in root `package.json`.** Modern pnpm refuses
-    to run install/postinstall scripts for third-party packages by default. `bcrypt`
-    (native addon), `@prisma/client`/`@prisma/engines`/`prisma` (fetch
-    platform-specific binaries), and `esbuild` (fetches its native binary) all need
-    theirs to run, or `pnpm install` silently produces a broken `node_modules`. Added:
-    ```json
-    "pnpm": {
-      "onlyBuiltDependencies": ["@prisma/client", "@prisma/engines", "bcrypt", "esbuild", "prisma"]
-    }
-    ```
-
-11. **`packageManager` version pin vs. installed pnpm.** Corepack tried to silently
-    download and stage a newer pinned pnpm version into a system-wide tools directory,
-    failing with `EPERM: operation not permitted` in a sandboxed environment. Fixed by
-    pinning `packageManager` to whatever pnpm version is genuinely installed rather than
-    fighting Corepack's auto-install path.
-
-12. **`DATABASE_URL` duplicated into each app's own `.env`.** Next.js loads environment
-    variables from **the app's own** `.env`, not a shared root one — `packages/db/.env`
-    is only read by Prisma CLI commands run *from inside* `packages/db`. Since
-    `user-app`'s server actions and `merchant-app`'s `signIn` callback both import
-    `prisma` and query it in-process, each app needs its own `DATABASE_URL`. This is
-    exactly why `apps/user-app/.env.example` and `packages/db/.env.example` both carry
-    the same `DATABASE_URL` line independently in this repo, rather than one shared file.
-
-13. **A second seeded user.** `user-app`'s seed script (not shown among the reviewed
-    source files directly, but referenced by `packages/db/package.json`'s Prisma `seed`
-    hook) creates both `1111111111` (Alice, ₹200 starting balance) and `2222222222`
-    (Bob, ₹0) so P2P is testable immediately after `npx prisma db seed`, with no manual
-    Prisma Studio editing required first.
-
-14. **`apps/user-app/.gitignore`'s `.env*` pattern was swallowing `.env.example`.** A
-    blanket `.env*` ignore rule also matched `.env.example`, which is meant to be
-    committed as a template. Fixed with a `!.env.example` negation line.
-
-15. **Tailwind `content` glob matching all of `node_modules`.** Both apps'
-    `tailwind.config.js` files use `"../../packages/ui/src/**/*.{js,ts,jsx,tsx,mdx}"` —
-    note the `src/` segment. An earlier version without `src/` also walked
-    `packages/ui/node_modules`, triggering Tailwind's JIT warning about accidentally
-    scanning `node_modules` for class names. The `src/`-scoped glob shown in both
-    `tailwind.config.js` files in this repo today is the corrected version.
-
-None of these changes alter the *behavior* the original course guides describe — every
-feature (on-ramp deposits, the webhook, P2P transfers with row-locking, Docker + CI/CD)
-works exactly as documented. They are toolchain/version fixes needed to get from "guide
-describing an idealized project" to "project that actually builds and runs" on this
-repo's real, newer dependency versions (Next 14.2.35, Prisma 6.19.3, pnpm workspaces,
-TypeScript 5.9/7.0 depending on package, ESLint 10/8 depending on package).
 
 ---
 
-## 6. Verification performed
+## 13. What's Deliberately *Not* Here
 
-1. **`pnpm install`** — succeeds after the fixes in §5 (items 3, 9, 10, 11).
-2. **`npx prisma migrate dev`** — applies cleanly against a fresh Postgres container
-   (after working around the port conflict in §5 item 8).
-3. **`npx prisma db seed`** — creates Alice (₹200) and Bob (₹0).
-4. **`pnpm run build`** — all three apps plus the webhook build cleanly via Turborepo,
-   after the fixes in §5 items 4, 5, 6.
-5. **`pnpm run dev`**, exercised manually in a browser:
-   - Signed in as Alice via the Credentials form → landed on `/dashboard` with all four
-     sidebar items (Home / Transfer / Transactions / P2P Transfer).
-   - `/transfer`: submitted **Add Money** for ₹500 via HDFC → confirmed a new
-     `OnRampTransaction` row (`status: Processing`, a real random token) in the
-     database.
-   - Called the webhook directly with that token:
-     ```
-     curl -X POST http://localhost:3003/hdfcWebhook \
-       -H "Content-Type: application/json" \
-       -d '{"token":"<token>","user_identifier":"1","amount":"50000"}'
-     ```
-     confirmed the transaction flipped to `Success` and Alice's balance increased by
-     exactly ₹500.
-   - `/p2p`: sent ₹100 from Alice to Bob (`2222222222`) → confirmed Alice's balance
-     dropped by 10000 paise, Bob's rose by 10000 paise, and a new `P2pTransfer` row was
-     created.
-   - Attempted to send more than Alice's remaining balance → confirmed **both**
-     balances stayed unchanged and no `P2pTransfer` row was created, i.e. the `FOR
-     UPDATE` lock plus the balance-check guard rejected the transfer exactly as
-     designed (§3.1, step 6) — even though the UI itself shows no visible error message
-     for this case, as noted in that section.
-   - Reproduced and fixed the `<p>`/`<div>` hydration bug (§5 item 7) live in the
-     browser console while validating the `/transfer` page.
-6. **Docker**: `cp docker/Dockerfile.user Dockerfile && docker build -f Dockerfile .`
-   built successfully end-to-end (pnpm install → prisma generate → turbo build). Running
-   the resulting image and hitting `GET /api/auth/signin` returned `200`.
+These belong to Stage 2 and later, and are intentionally excluded so this guide
+stays accurate to the raw starter:
 
-**Not exercised** (needs real external credentials, outside what a local pass can
-verify): the live Google OAuth round-trip for `merchant-app`, and the full GitHub
-Actions → Docker Hub → EC2 deploy path (needs real repo secrets and a running EC2
-instance — see §4.4).
+- `apps/bank-webhook` (Express payment-callback service)
+- `Balance` / `OnRampTransaction` (and later `P2pTransfer`) Prisma models and the
+entire "Add Money" / wallet-transfer flow
+- The `(dashboard)` route group, sidebar navigation, `/transfer`, `/transactions`,
+`/p2p` pages
+- `AddMoneyCard`, `BalanceCard`, `OnRampTransactions`, `SidebarItem`, `SendCard`
+components, and the `Center`/`Select`/`TextInput` additions to `@repo/ui`
+- `packages/typescript-config` customization and `prisma/seed.ts`
+- Docker, GitHub Actions CI/CD, and any deployment infrastructure
 
----
-
-## 7. Quick reference — where to change what
-
-| I want to... | Edit this |
-|---|---|
-| Add a new wallet feature/route | `apps/user-app/app/(dashboard)/<route>/page.tsx` |
-| Change how deposits are recorded | `apps/user-app/app/lib/actions/createOnrampTransaction.ts` |
-| Change how the bank confirms a deposit | `apps/bank-webhook/src/index.ts` |
-| Change P2P transfer logic/locking | `apps/user-app/app/lib/actions/p2pTransfer.tsx` |
-| Change login/signup rules for the wallet | `apps/user-app/app/lib/auth.ts` |
-| Change merchant login rules | `apps/merchant-app/lib/auth.ts` |
-| Add/modify a shared UI component | `packages/ui/src/*.tsx` |
-| Add a Prisma model or field | `packages/db/prisma/schema.prisma`, then `npx prisma migrate dev` from `packages/db` |
-| Change the deployed container's build steps | `docker/Dockerfile.user` |
-| Change what triggers CI or CD | `.github/workflows/build.yml` / `push.yml` |
+If/when you're ready to build those, they're additive on top of exactly what's in
+this guide — new Prisma models + migrations, a new `bank-webhook` app (scaffold with
+`npx turbo gen workspace --name bank-webhook --type app`), and new routes/components
+inside `user-app`. See the Stage 2, 3, and 4 guides for each of those in the same
+level of detail as this one.
