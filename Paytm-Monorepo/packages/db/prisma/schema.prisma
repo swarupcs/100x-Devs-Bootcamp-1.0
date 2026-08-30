@@ -1,70 +1,116 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// packages/db/prisma/schema.prisma
+//
+// This is the Prisma schema file — the single source of truth for the
+// database structure of the entire Paytm monorepo.
+//
+// All apps (user-app, merchant-app, bank-webhook) share this schema
+// via the "@repo/db" package.
+//
+// To apply changes:
+//   pnpm prisma migrate dev   — create and apply a new migration in development
+//   pnpm prisma generate      — regenerate the Prisma Client after schema changes
+//   pnpm prisma db seed       — run the seed script (prisma/seed.ts)
+//
+// Docs: https://pris.ly/d/prisma-schema
 
+// ─── Generator ───────────────────────────────────────────────────────────────
+// Tells Prisma to generate the JavaScript/TypeScript client library.
+// The generated client is what we import as `@prisma/client` in code.
 generator client {
   provider = "prisma-client-js"
 }
 
+// ─── Datasource ──────────────────────────────────────────────────────────────
+// Connects to a PostgreSQL database.
+// The connection string is read from the DATABASE_URL environment variable.
+// Format: postgresql://USER:PASSWORD@HOST:PORT/DATABASE
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+// User — represents a registered end-user of the wallet app (not a merchant).
+// Users authenticate via phone number + password (Credentials Provider).
 model User {
-  id                Int                 @id @default(autoincrement())
-  email             String?             @unique
-  name              String?
-  number            String?             @unique
-  password          String?
-  Balance           Balance?
-  OnRampTransaction OnRampTransaction[]
-  sentTransfers     P2pTransfer[]       @relation("FromUser")
-  receivedTransfers P2pTransfer[]       @relation("ToUser")
+  id                Int                 @id @default(autoincrement())  // auto-incrementing primary key
+  email             String?             @unique                        // optional; not used for auth (phone is used instead)
+  name              String?                                            // display name (optional on first sign-up)
+  number            String?             @unique                        // phone number — the primary login identifier
+  password          String?                                            // bcrypt-hashed password
+
+  // Relations
+  Balance           Balance?                                           // one-to-one: each user has at most one Balance record
+  OnRampTransaction OnRampTransaction[]                                // one-to-many: a user can have many bank top-up transactions
+  sentTransfers     P2pTransfer[]       @relation("FromUser")          // one-to-many: transfers sent by this user
+  receivedTransfers P2pTransfer[]       @relation("ToUser")            // one-to-many: transfers received by this user
 }
 
+// Merchant — represents a business registered on the merchant platform.
+// Merchants authenticate via Google OAuth (no password stored).
 model Merchant {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  name      String?
-  auth_type AuthType @default(Google)
+  id        Int      @id @default(autoincrement())  // auto-incrementing primary key
+  email     String   @unique                        // Google account email — the unique identifier
+  name      String?                                 // merchant's display name from Google profile
+  auth_type AuthType @default(Google)               // tracks which OAuth provider was used
 }
 
+// AuthType enum — the set of supported OAuth providers for merchant login
 enum AuthType {
   Google
   Github
 }
 
+// Balance — stores the wallet balance for each User.
+// One-to-one with User (userId is unique).
+// Amounts are stored in PAISE (integer) to avoid floating-point precision issues.
+//   e.g. ₹500 → stored as 50000
 model Balance {
   id     Int  @id @default(autoincrement())
-  userId Int  @unique
-  amount Int
-  locked Int
+  userId Int  @unique                        // foreign key → User.id (one-to-one enforced by @unique)
+  amount Int                                 // spendable (unlocked) balance in paise
+  locked Int                                 // pending/locked balance in paise (e.g. processing OnRamp)
+
+  // Relation back to User
   user   User @relation(fields: [userId], references: [id])
 }
 
+// OnRampTransaction — records each attempt to top up a wallet from a bank.
+// Created with status "Processing" when the user initiates a transfer.
+// Updated to "Success" or "Failure" by the bank-webhook when the bank responds.
+// Amount is stored in paise.
 model OnRampTransaction {
   id        Int          @id @default(autoincrement())
-  status    OnRampStatus
-  token     String       @unique
-  provider  String
-  amount    Int
-  startTime DateTime
-  userId    Int
+  status    OnRampStatus                               // current state of the transaction
+  token     String       @unique                       // unique identifier shared with the bank for matching webhook callbacks
+  provider  String                                     // bank name (e.g. "HDFC Bank", "Axis Bank")
+  amount    Int                                        // transaction amount in paise
+  startTime DateTime                                   // when the user initiated the top-up
+  userId    Int                                        // foreign key → User.id
+
+  // Relation back to User
   user      User         @relation(fields: [userId], references: [id])
 }
 
+// OnRampStatus enum — the lifecycle states of a bank top-up transaction
 enum OnRampStatus {
-  Success
-  Failure
-  Processing
+  Success    // Bank confirmed payment; wallet balance has been credited
+  Failure    // Bank rejected the payment; no balance change
+  Processing // Payment is in progress; waiting for bank webhook callback
 }
 
+// P2pTransfer — records each peer-to-peer money transfer between two users.
+// Created atomically inside a DB transaction in the p2pTransfer server action.
+// Amount is stored in paise.
 model P2pTransfer {
   id         Int      @id @default(autoincrement())
-  amount     Int
-  timestamp  DateTime
-  fromUserId Int
-  toUserId   Int
+  amount     Int                                     // transfer amount in paise
+  timestamp  DateTime                                // when the transfer was completed
+  fromUserId Int                                     // foreign key → User.id (sender)
+  toUserId   Int                                     // foreign key → User.id (recipient)
+
+  // Named relations — required because User has TWO relations to P2pTransfer
   fromUser   User     @relation("FromUser", fields: [fromUserId], references: [id])
-  toUser     User     @relation("ToUser", fields: [toUserId], references: [id])
+  toUser     User     @relation("ToUser",   fields: [toUserId],   references: [id])
 }
