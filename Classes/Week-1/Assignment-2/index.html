@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Contact our sales team</title>
+<style>
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  .page {
+    display: flex;
+    min-height: 100vh;
+  }
+
+  /* ---------- LEFT PANEL ---------- */
+  .left {
+    flex: 1;
+    background: #161616;
+    color: #ffffff;
+    position: relative;
+    padding: 56px 64px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .logo {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 60px;
+  }
+
+  .headline {
+    font-size: 56px;
+    line-height: 1.1;
+    font-weight: 400;
+    margin: 0 0 36px 0;
+    letter-spacing: -1px;
+  }
+
+  .features {
+    list-style: none;
+    margin: 0 0 auto 0;
+    padding: 0;
+  }
+
+  .features li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 18px;
+    margin-bottom: 18px;
+    color: #f2f2f2;
+  }
+
+  .features li .icon {
+    font-size: 16px;
+    width: 20px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .trusted-section {
+    margin-top: 60px;
+    position: relative;
+    z-index: 2;
+  }
+
+  .trusted-label {
+    color: #9a9a9a;
+    font-size: 15px;
+    margin-bottom: 24px;
+  }
+
+  .logos {
+    display: flex;
+    align-items: center;
+    gap: 40px;
+    flex-wrap: wrap;
+    margin-bottom: 32px;
+  }
+
+  .logos img,
+  .logos .logo-text {
+    height: 26px;
+    filter: brightness(0) invert(1);
+    opacity: 0.9;
+  }
+
+  .logo-text {
+    font-weight: 600;
+    font-size: 20px;
+    color: #fff;
+    display: flex;
+    align-items: center;
+  }
+
+  .rating {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #f2f2f2;
+    font-size: 16px;
+  }
+
+  .stars {
+    color: #ffffff;
+    letter-spacing: 2px;
+    font-size: 18px;
+  }
+
+  .wave-bg {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: auto;
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0.9;
+  }
+
+  /* ---------- RIGHT PANEL ---------- */
+  .right {
+    flex: 1;
+    background: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+  }
+
+  .form-wrap {
+    width: 100%;
+    max-width: 460px;
+  }
+
+  .form-title {
+    font-size: 34px;
+    font-weight: 400;
+    margin: 0 0 10px 0;
+    color: #111;
+    letter-spacing: -0.5px;
+  }
+
+  .form-subtitle {
+    color: #8a8a8a;
+    font-size: 16px;
+    margin: 0 0 36px 0;
+  }
+
+  .field {
+    margin-bottom: 24px;
+  }
+
+  .field label {
+    display: block;
+    font-size: 15px;
+    color: #222;
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+
+  .field input {
+    width: 100%;
+    padding: 14px 16px;
+    font-size: 15px;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    outline: none;
+    color: #333;
+    font-family: inherit;
+    transition: border-color 0.15s ease;
+  }
+
+  .field input:focus {
+    border-color: #161616;
+  }
+
+  .field input::placeholder {
+    color: #b3b3b3;
+  }
+
+  .form-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 36px;
+  }
+
+  .next-btn {
+    background: #161616;
+    color: #fff;
+    border: none;
+    padding: 13px 28px;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s ease;
+  }
+
+  .next-btn:hover {
+    background: #000;
+  }
+
+  .progress {
+    display: flex;
+    gap: 8px;
+  }
+
+  .progress span {
+    width: 56px;
+    height: 6px;
+    border-radius: 3px;
+    background: #e6e6e6;
+  }
+
+  .progress span.active {
+    background: #161616;
+  }
+
+  /* ---------- RESPONSIVE ---------- */
+  @media (max-width: 900px) {
+    .page { flex-direction: column; }
+    .left, .right { flex: none; }
+    .left { padding: 40px 32px 60px; }
+    .headline { font-size: 38px; }
+    .logos { gap: 24px; }
+    .right { padding: 40px 24px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <!-- LEFT: Marketing panel -->
+  <div class="left">
+    <div class="logo">‖ElevenLabs</div>
+
+    <h1 class="headline">Contact our<br>sales team</h1>
+
+    <ul class="features">
+      <li><span class="icon">🚀</span> Custom pricing and elevated concurrency</li>
+      <li><span class="icon">🛡️</span> Enterprise-grade security including SOC II, GDPR and HIPAA compliance</li>
+      <li><span class="icon">🏛️</span> Enterprise support and SLAs</li>
+    </ul>
+
+    <div class="trusted-section">
+      <div class="trusted-label">Trusted by 10,000+ leading businesses</div>
+      <div class="logos">
+        <span class="logo-text">cisco</span>
+        <span class="logo-text">Deutsche&nbsp;Telekom</span>
+        <span class="logo-text" style="font-style: italic; font-family: Georgia, serif;">Walt Disney Studios</span>
+        <span class="logo-text">NVIDIA</span>
+        <span class="logo-text">salesforce</span>
+      </div>
+      <div class="rating">
+        <span class="stars">★★★★★</span>
+        <span>4.5 stars and 1,059+ reviews</span>
+      </div>
+    </div>
+
+    <svg class="wave-bg" viewBox="0 0 800 200" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M0,120 C150,180 300,60 450,110 C600,160 700,80 800,130 L800,200 L0,200 Z" fill="#ffffff" opacity="0.06"/>
+      <path d="M0,150 C180,90 320,190 500,140 C650,100 720,170 800,150 L800,200 L0,200 Z" fill="#ffffff" opacity="0.1"/>
+    </svg>
+  </div>
+
+  <!-- RIGHT: Form panel -->
+  <div class="right">
+    <div class="form-wrap">
+      <h2 class="form-title">Contact sales form</h2>
+      <p class="form-subtitle">Please fill out the form below to get started</p>
+
+      <div class="field">
+        <label for="website">Company Website</label>
+        <input type="text" id="website" placeholder="Swarup Das">
+      </div>
+
+      <div class="field">
+        <label for="email">Business Email</label>
+        <input type="email" id="email" placeholder="admin@swarupdas.com">
+      </div>
+
+      <div class="form-footer">
+        <button class="next-btn">Next</button>
+        <div class="progress">
+          <span class="active"></span>
+          <span></span>
+          <span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
